@@ -15,6 +15,16 @@ export function builtInSources(home = homedir()) {
   ];
 }
 
+export function listInstallTargets(home = homedir()) {
+  return builtInSources(home).map(({ id, name, agent, path }) => ({ id, name, agent, path }));
+}
+
+export function getInstallTarget(id, home = homedir()) {
+  const target = listInstallTargets(home).find(item => item.id === id);
+  if (!target) throw new Error('Unsupported target Agent.');
+  return target;
+}
+
 export function listSources() {
   const states = database.getSettings().sourceStates || {};
   return [...builtInSources(), ...database.listSources()].map(source => ({
