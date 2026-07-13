@@ -29,6 +29,18 @@ test('release normalization exposes only trusted GitHub Windows assets', () => {
   assert.match(result.assets[0].name, /Setup/);
 });
 
+test('release normalization rejects prereleases and imprecise GitHub URLs', () => {
+  const base = {
+    tag_name: 'v0.6.0',
+    name: 'SkillPilot 0.6.0',
+    html_url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.6.0',
+    assets: []
+  };
+  assert.throws(() => normalizeRelease({ ...base, prerelease: true }, '0.5.0'), /stable release/i);
+  assert.throws(() => normalizeRelease({ ...base, draft: true }, '0.5.0'), /stable release/i);
+  assert.throws(() => normalizeRelease({ ...base, html_url: 'https://github.com/Mxxy111/Skill-Pilot/releases/anything' }, '0.5.0'), /URL/i);
+});
+
 test('update check treats a repository without releases as unpublished', async () => {
   const result = await checkForAppUpdate({
     currentVersion: '0.5.0',

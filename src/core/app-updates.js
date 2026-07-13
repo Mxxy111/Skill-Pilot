@@ -27,16 +27,17 @@ function trustedGithubReleaseUrl(value, type) {
   try {
     const url = new URL(String(value || ''));
     const path = url.pathname.toLowerCase();
-    const expected = type === 'asset'
-      ? '/mxxy111/skill-pilot/releases/download/'
-      : '/mxxy111/skill-pilot/releases/';
-    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'github.com' || url.username || url.password || !path.startsWith(expected)) return null;
+    const validPath = type === 'asset'
+      ? /^\/mxxy111\/skill-pilot\/releases\/download\/[^/]+\/[^/]+$/.test(path)
+      : /^\/mxxy111\/skill-pilot\/releases\/tag\/[^/]+$/.test(path);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'github.com' || url.username || url.password || url.search || url.hash || !validPath) return null;
     return url.href;
   } catch { return null; }
 }
 
 export function normalizeRelease(release, currentVersion = CURRENT_VERSION) {
   if (!release || typeof release !== 'object') throw new Error('GitHub returned an invalid release.');
+  if (release.draft === true || release.prerelease === true) throw new Error('GitHub did not return a stable release.');
   const latestParts = versionParts(release.tag_name);
   const latestVersion = latestParts.join('.');
   const url = trustedGithubReleaseUrl(release.html_url, 'release');
