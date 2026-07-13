@@ -76,9 +76,9 @@ try {
 
   await window.locator('.nav-item').filter({ hasText: '设置' }).click();
   await window.getByRole('heading', { name: '应用更新' }).waitFor();
-  await window.getByText('发现新版本 0.6.1').waitFor();
+  await window.locator('.update-state').filter({ hasText: '发现新版本 0.6.1' }).waitFor();
   await window.getByRole('button', { name: '立即检查更新' }).click();
-  await window.getByText('发现新版本 0.6.1').waitFor();
+  await window.getByRole('status').filter({ hasText: '发现新版本 0.6.1' }).waitFor();
   await window.screenshot({ path: join(screenshotDir, 'desktop-settings-update.png'), fullPage: true });
   if (consoleErrors.length) throw new Error(`Renderer console errors: ${consoleErrors.join(' | ')}`);
 
