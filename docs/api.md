@@ -20,6 +20,13 @@ Discovery installation is a two-phase contract. Inspection never changes the fil
 
 Supported `targetAgent` values are `claude`, `codex`, `agents`, `openclaw`, `gemini`, and `cursor`. Repository identifiers, commit SHAs, target values, archive paths, sizes and file counts are validated at the route boundary. GitHub responses and AI output are always treated as untrusted data.
 
+## Application updates
+
+- `GET /api/app-updates/status?force=1` checks the latest published, non-prerelease GitHub Release for `Mxxy111/Skill-Pilot`.
+- The response contains current/latest versions, availability, a trusted release page and matching Windows assets.
+- The endpoint never downloads or executes an installer. A one-hour in-memory cache avoids unnecessary GitHub API usage; `force=1` is reserved for an explicit user refresh.
+- Legacy `GET /api/version` remains as a reduced compatibility view of the same GitHub Release result.
+
 The implementation uses GitHub's versioned REST headers and follows its official [Git tree](https://docs.github.com/en/rest/git/trees#get-a-tree), [commit](https://docs.github.com/en/rest/commits/commits#get-a-commit), and [repository archive](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip) contracts.
 
 No endpoint returns saved AI or GitHub credentials. A settings response uses `hasApiKey` and `hasGithubToken` booleans instead.

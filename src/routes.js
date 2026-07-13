@@ -14,8 +14,6 @@ import { syncInit, syncSetRemote, syncPush, syncPull, syncStatus } from './core/
 import { listAvailablePlugins, listCategories, listSources, setSourceEnabled, installPlugin } from './core/registry.js';
 import { getUpdateSummary, checkAllUpdates, updatePlugin } from './core/updates.js';
 import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import { database, validateBackup } from './core/database.js';
 import { listSources as listSkillSources, addCustomSource, updateSource, removeSource, listInstallTargets } from './core/sources.js';
 import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
@@ -24,42 +22,12 @@ import { classifySkills, getAutomationStatus, normalizeAutomationPatch, runMaint
 import { testAI } from './core/ai.js';
 import { getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
 import { normalizeCommitSha, normalizeRepositorySlug } from './core/repository-security.js';
+import { checkForAppUpdate, CURRENT_VERSION } from './core/app-updates.js';
 
 const upload = multer({ dest: join(tmpdir(), 'skill-manager-uploads'), limits: { fileSize: 10 * 1024 * 1024 } });
 
 function apiError(res, status, code, message, details) {
   return res.status(status).json({ error: { code, message, ...(details ? { details } : {}) } });
-}
-
-/* ── Quiver self-update check ─────────────────── */
-const __dirname_routes = dirname(fileURLToPath(import.meta.url));
-const CURRENT_VERSION = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname_routes, '..', 'package.json'), 'utf8'));
-    return pkg.version;
-  } catch { return '0.0.0'; }
-})();
-
-let latestVersionCache = { version: null, checkedAt: 0 };
-
-async function getLatestVersion() {
-  const now = Date.now();
-  // Cache for 1 hour
-  if (latestVersionCache.version && (now - latestVersionCache.checkedAt) < 3600000) {
-    return latestVersionCache.version;
-  }
-  try {
-    const res = await fetch('https://registry.npmjs.org/quiver-skill-manager/latest', {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!res.ok) return latestVersionCache.version || CURRENT_VERSION;
-    const data = await res.json();
-    latestVersionCache = { version: data.version, checkedAt: now };
-    return data.version;
-  } catch {
-    return latestVersionCache.version || CURRENT_VERSION;
-  }
 }
 
 /** Escape special XML characters to prevent injection in plist generation. */
@@ -478,6 +446,15 @@ export function createRoutes() {
     catch (e) { apiError(res, 409, 'MAINTENANCE_FAILED', sanitizeError(e.message)); }
   });
 
+  router.get('/app-updates/status', async (req, res) => {
+    try {
+      res.json(await checkForAppUpdate({
+        force: req.query.force === '1',
+        token: database.getSettings().github.token
+      }));
+    } catch (e) { apiError(res, 502, 'APP_UPDATE_CHECK_FAILED', sanitizeError(e.message)); }
+  });
+
   router.get('/discovery/github', async (req, res) => {
     try { res.json(await searchGithub(req.query)); }
     catch (e) { apiError(res, 502, 'GITHUB_SEARCH_FAILED', sanitizeError(e.message)); }
@@ -535,13 +512,14 @@ export function createRoutes() {
 
   router.get('/version', async (req, res) => {
     try {
-      const latest = await getLatestVersion();
+      const result = await checkForAppUpdate({ token: database.getSettings().github.token });
       res.json({
         current: CURRENT_VERSION,
-        latest,
-        updateAvailable: latest !== CURRENT_VERSION && latest > CURRENT_VERSION
+        latest: result.latestVersion || CURRENT_VERSION,
+        updateAvailable: result.updateAvailable,
+        releaseUrl: result.release?.url || null
       });
-    } catch (e) {
+    } catch {
       res.json({ current: CURRENT_VERSION, latest: CURRENT_VERSION, updateAvailable: false });
     }
   });
