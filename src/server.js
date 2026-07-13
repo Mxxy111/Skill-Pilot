@@ -26,7 +26,12 @@ function resolveUIPath() {
   return join(scriptDir, '..', 'ui');
 }
 
-export function startServer(port = parseInt(process.env.PORT) || 3456) {
+export function startServer(port = parseInt(process.env.PORT) || 3456, options = {}) {
+  const {
+    host = '127.0.0.1',
+    openBrowser = process.env.SKILLPILOT_NO_OPEN !== '1',
+    onReady = null
+  } = options;
   const uiPath = resolveUIPath();
   const app = express();
 
@@ -59,11 +64,14 @@ export function startServer(port = parseInt(process.env.PORT) || 3456) {
     res.sendFile(join(uiPath, 'index.html'));
   });
 
-  const server = app.listen(port, '127.0.0.1', () => {
-    const url = `http://localhost:${port}`;
-    console.log(`Quiver running at ${url}`);
+  const server = app.listen(port, host, () => {
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : port;
+    const url = `http://${host}:${actualPort}`;
+    console.log(`SkillPilot running at ${url}`);
     startAutomationScheduler();
-    if (process.env.SKILLPILOT_NO_OPEN !== '1') open(url);
+    onReady?.(url);
+    if (openBrowser) open(url);
   });
   return server;
 }

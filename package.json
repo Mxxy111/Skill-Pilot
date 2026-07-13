@@ -1,14 +1,17 @@
 {
   "name": "skillpilot-local",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local operations center for managing AI Agent Skills across Claude, Codex, OpenClaw, Gemini, Cursor and custom sources",
   "type": "module",
+  "main": "desktop/main.js",
   "bin": {
     "skillpilot": "./bin/skillpilot.js",
     "quiver": "./bin/quiver.js"
   },
   "files": [
     "bin/",
+    "desktop/",
+    "scripts/",
     "src/",
     "ui/",
     "docs/",
@@ -23,8 +26,13 @@
   "scripts": {
     "start": "node src/cli.js",
     "ui": "node src/cli.js ui",
+    "desktop": "electron .",
+    "smoke:desktop": "node scripts/desktop-smoke.mjs",
+    "icon:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-icon.ps1",
+    "pack:win": "electron-builder --win dir --x64",
+    "dist:win": "npm run icon:win && electron-builder --win nsis portable --x64",
     "test": "node --test",
-    "check": "node --check src/cli.js && node --check src/routes.js && node --check src/server.js && node --check src/core/automation.js && node --check src/core/bulk.js && node --check ui/app.js"
+    "check": "node --check desktop/main.js && node --check desktop/policies.js && node --check src/cli.js && node --check src/routes.js && node --check src/server.js && node --check src/core/automation.js && node --check src/core/bulk.js && node --check ui/app.js"
   },
   "keywords": [
     "claude",
@@ -49,7 +57,46 @@
     "open": "^10.1.0"
   },
   "devDependencies": {
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.0",
     "playwright-core": "^1.61.1"
+  },
+  "build": {
+    "appId": "io.skillpilot.desktop",
+    "productName": "SkillPilot",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "ui/**/*",
+      "bin/**/*",
+      "docs/**/*",
+      "package.json",
+      "README.md",
+      "LICENSE"
+    ],
+    "win": {
+      "executableName": "SkillPilot",
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}-${arch}.${ext}"
+    }
   }
 }

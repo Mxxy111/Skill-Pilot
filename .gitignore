@@ -11,3 +11,4 @@ dist/
 .skillpilot-server.err.log
 test-results/
 playwright-report/
+release/
