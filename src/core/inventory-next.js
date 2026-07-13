@@ -12,7 +12,8 @@ export function enrichSkill(skill) {
     summary: metadata.summary || '',
     risk: metadata.risk || 'unknown',
     isFavorite: Boolean(metadata.isFavorite),
-    lastClassifiedAt: metadata.lastClassifiedAt || null
+    lastClassifiedAt: metadata.lastClassifiedAt || null,
+    lastClassificationFingerprint: metadata.lastClassificationFingerprint || null
   };
 }
 

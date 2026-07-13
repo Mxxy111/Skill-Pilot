@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { database } from './database.js';
 import { listAll, getSkillContent } from './inventory.js';
 import { classifySkill } from './ai.js';
@@ -17,36 +19,73 @@ export function normalizeAutomationPatch(current, patch, now = new Date()) {
   return { ...(patch || {}), nextRunAt: scheduleChanged ? nextRunAt(now, merged.intervalHours) : current.nextRunAt };
 }
 
-export function selectSkillsForClassification(skills, ids = [], limit = 25) {
+export function classificationFingerprint(skill) {
+  const input = JSON.stringify({ content: String(skill?.content || ''), frontmatter: skill?.frontmatter || {} });
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function needsClassification(skill, force) {
+  if (force || !skill.lastClassifiedAt) return true;
+  if (skill.classificationFingerprint && skill.lastClassificationFingerprint) {
+    return skill.classificationFingerprint !== skill.lastClassificationFingerprint;
+  }
+  const modifiedAt = Date.parse(skill.modified || '');
+  const classifiedAt = Date.parse(skill.lastClassifiedAt || '');
+  return Number.isFinite(modifiedAt) && Number.isFinite(classifiedAt) && modifiedAt > classifiedAt;
+}
+
+export function selectSkillsForClassification(skills, ids = [], limit = 25, options = {}) {
   const wanted = new Set(ids);
-  const eligible = skills
+  const candidates = skills
     .filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id)))
+    .filter(skill => needsClassification(skill, options.force === true));
+  const eligible = candidates
     .sort((a, b) => {
       if (!a.lastClassifiedAt && b.lastClassifiedAt) return -1;
       if (a.lastClassifiedAt && !b.lastClassifiedAt) return 1;
       return String(a.lastClassifiedAt || '').localeCompare(String(b.lastClassifiedAt || '')) || a.id.localeCompare(b.id);
     });
   const batchSize = Math.max(1, Math.min(100, Number(limit) || 25));
-  return { items: eligible.slice(0, batchSize), remaining: Math.max(0, eligible.length - batchSize), eligible: eligible.length };
+  return {
+    items: eligible.slice(0, batchSize),
+    remaining: Math.max(0, eligible.length - batchSize),
+    eligible: eligible.length,
+    skippedStable: Math.max(0, skills.filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id))).length - eligible.length)
+  };
 }
 
-export async function classifySkills(ids = []) {
+export async function classifySkills(ids = [], options = {}) {
   const settings = database.getSettings();
   if (!settings.ai.enabled) throw new Error('AI classification is not enabled.');
-  const selection = selectSkillsForClassification(listAll(), ids, ids.length ? 100 : settings.automation.classificationBatchSize);
+  const skills = listAll().map(skill => {
+    const input = getSkillContent(skill.id) || skill;
+    return { ...skill, classificationInput: input, classificationFingerprint: classificationFingerprint(input) };
+  });
+  const selection = selectSkillsForClassification(
+    skills,
+    ids,
+    ids.length ? 100 : settings.automation.classificationBatchSize,
+    { force: ids.length > 0 }
+  );
   const results = [];
   for (const skill of selection.items) {
     try {
-      const classification = await classifySkill(getSkillContent(skill.id) || skill);
-      database.updateSkill(skill.id, { ...classification, lastClassifiedAt: new Date().toISOString() });
+      const classification = await classifySkill(skill.classificationInput);
+      database.updateSkill(skill.id, {
+        ...classification,
+        lastClassifiedAt: new Date().toISOString(),
+        lastClassificationFingerprint: skill.classificationFingerprint
+      });
       results.push({ id: skill.id, ok: true, classification });
     } catch (error) {
       results.push({ id: skill.id, ok: false, error: error.message });
     }
   }
   const succeeded = results.filter(item => item.ok).length;
-  database.addHistory({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });
-  return { total: results.length, succeeded, remaining: selection.remaining, results };
+  if (options.recordHistory !== false) {
+    database.addHistory({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });
+  }
+  return { total: results.length, succeeded, remaining: selection.remaining, skippedStable: selection.skippedStable, results };
 }
 
 export async function runMaintenance({ classify = null, scheduled = false } = {}, options = {}) {
@@ -80,7 +119,7 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
     }
     const shouldClassify = classify ?? settings.automation.classification;
     if (shouldClassify && settings.ai.enabled) {
-      result.classification = await (options.classifyImpl || classifySkills)();
+      result.classification = await (options.classifyImpl || classifySkills)([], { recordHistory: false });
       result.failures += Math.max(0, result.classification.total - result.classification.succeeded);
     }
     result.status = result.failures ? 'partial' : 'success';

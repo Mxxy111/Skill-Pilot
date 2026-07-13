@@ -38,3 +38,25 @@ test('automation settings schedule the first run after the selected interval', (
   assert.equal(patch.nextRunAt, '2026-07-13T18:00:00.000Z');
   assert.equal(normalizeAutomationPatch({ enabled: true }, { enabled: false }, new Date()).nextRunAt, null);
 });
+
+test('maintenance suppresses the duplicate standalone classification history entry', async () => {
+  let classifyArguments = null;
+  const history = [];
+  await runMaintenance({ classify: true }, {
+    settings: {
+      ai: { enabled: true },
+      automation: { enabled: false, intervalHours: 24, updateChecks: false, autoUpdate: false, classification: true }
+    },
+    classifyImpl: async (...args) => {
+      classifyArguments = args;
+      return { total: 0, succeeded: 0, remaining: 0, skippedStable: 4, results: [] };
+    },
+    updateSettings: () => {},
+    addHistory: entry => history.push(entry),
+    now: () => new Date('2026-07-13T12:00:00.000Z')
+  });
+
+  assert.equal(classifyArguments[1].recordHistory, false);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].type, 'maintenance');
+});

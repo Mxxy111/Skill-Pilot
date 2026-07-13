@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CLASSIFICATION_CATEGORIES,
   normalizeClassification,
   parseClassificationResponse,
   parseRepositoryAssessment,
@@ -11,11 +12,17 @@ import { selectSkillsForClassification } from '../src/core/automation.js';
 test('AI classification parser accepts fenced JSON and normalizes fields', () => {
   const parsed = parseClassificationResponse('```json\n{"category":"Development","tags":["API","api","tool"],"summary":"Builds APIs","risk":"low"}\n```');
   assert.deepEqual(parsed, {
-    category: 'Development',
+    category: '开发与工程',
     tags: ['api', 'tool'],
     summary: 'Builds APIs',
     risk: 'low'
   });
+});
+
+test('AI classification is constrained to the stable top-level taxonomy', () => {
+  assert.equal(CLASSIFICATION_CATEGORIES.length, 10);
+  assert.equal(normalizeClassification({ category: 'frontend component architecture', tags: [], risk: 'low' }).category, '设计与多媒体');
+  assert.equal(normalizeClassification({ category: 'extremely specific invented category', tags: [], risk: 'low' }).category, '通用工具');
 });
 test('AI classification rejects unsafe or invalid shapes', () => {
   assert.throws(() => normalizeClassification({ category: '', tags: 'not-an-array' }), /classification/i);
@@ -59,16 +66,22 @@ test('AI recommendations cannot introduce repositories outside the supplied cand
   }]);
 });
 
-test('scheduled classification prioritizes never-classified skills and reports remaining work', () => {
-  const skills = Array.from({ length: 130 }, (_, index) => ({
-    id: `codex:skill-${index}`,
-    source: 'local',
-    isEnabled: true,
-    lastClassifiedAt: index < 10 ? '2026-01-01T00:00:00.000Z' : null
-  }));
+test('scheduled classification selects only unclassified or content-changed skills', () => {
+  const skills = [
+    { id: 'codex:new', source: 'local', isEnabled: true, lastClassifiedAt: null, modified: '2026-01-01T00:00:00.000Z' },
+    { id: 'codex:stable', source: 'local', isEnabled: true, lastClassifiedAt: '2026-02-01T00:00:00.000Z', modified: '2026-01-01T00:00:00.000Z', classificationFingerprint: 'same', lastClassificationFingerprint: 'same' },
+    { id: 'codex:changed', source: 'local', isEnabled: true, lastClassifiedAt: '2026-02-01T00:00:00.000Z', modified: '2026-03-01T00:00:00.000Z', classificationFingerprint: 'new', lastClassificationFingerprint: 'old' }
+  ];
   const selected = selectSkillsForClassification(skills, [], 25);
 
-  assert.equal(selected.items.length, 25);
-  assert.equal(selected.remaining, 105);
-  assert.ok(selected.items.every(skill => !skill.lastClassifiedAt));
+  assert.deepEqual(selected.items.map(skill => skill.id), ['codex:new', 'codex:changed']);
+  assert.equal(selected.remaining, 0);
+  assert.equal(selected.eligible, 2);
+  assert.equal(selected.skippedStable, 1);
+});
+
+test('manual classification can intentionally refresh a stable selected skill', () => {
+  const skills = [{ id: 'codex:stable', source: 'local', isEnabled: true, lastClassifiedAt: '2026-02-01T00:00:00.000Z', modified: '2026-01-01T00:00:00.000Z' }];
+  const selected = selectSkillsForClassification(skills, ['codex:stable'], 25, { force: true });
+  assert.deepEqual(selected.items.map(skill => skill.id), ['codex:stable']);
 });
