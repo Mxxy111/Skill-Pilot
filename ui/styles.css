@@ -344,7 +344,7 @@ input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent);
 .loading-state span:nth-child(3) { animation-delay: 300ms; }
 .loading-state p { margin-left: 8px; font-size: 10px; }
 @keyframes load { to { opacity: .25; transform: translateY(-4px); } }
-.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); border: 0; padding: 0; white-space: nowrap; }
 
 @media (max-width: 1120px) {
   .page-stage { padding-inline: 24px; }

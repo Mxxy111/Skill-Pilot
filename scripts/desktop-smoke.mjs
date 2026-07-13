@@ -14,9 +14,9 @@ const electronApp = await electron.launch({
 
 try {
   await electronApp.context().route('**/api/app-updates/status**', route => route.fulfill({ json: {
-    status: 'update-available', currentVersion: '0.6.0', latestVersion: '0.6.1', updateAvailable: true,
+    status: 'update-available', currentVersion: '0.6.1', latestVersion: '0.6.2', updateAvailable: true,
     checkedAt: '2026-07-13T12:00:00.000Z',
-    release: { name: 'SkillPilot 0.6.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.6.1', publishedAt: '2026-07-13T12:00:00.000Z', notes: 'Stable update', assets: [] }
+    release: { name: 'SkillPilot 0.6.2', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.6.2', publishedAt: '2026-07-13T12:00:00.000Z', notes: 'Stable update', assets: [] }
   } }));
   const window = await electronApp.firstWindow();
   const consoleErrors = [];
@@ -76,13 +76,28 @@ try {
 
   await window.locator('.nav-item').filter({ hasText: '设置' }).click();
   await window.getByRole('heading', { name: '应用更新' }).waitFor();
-  await window.locator('.update-state').filter({ hasText: '发现新版本 0.6.1' }).waitFor();
+  await window.locator('.update-state').filter({ hasText: '发现新版本 0.6.2' }).waitFor();
   await window.getByRole('button', { name: '立即检查更新' }).click();
-  await window.getByRole('status').filter({ hasText: '发现新版本 0.6.1' }).waitFor();
+  await window.getByRole('status').filter({ hasText: '发现新版本 0.6.2' }).waitFor();
+  const horizontalLayout = await window.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    bodyWidth: document.body.scrollWidth,
+    offenders: [...document.querySelectorAll('body *')]
+      .map(element => {
+        const rect = element.getBoundingClientRect();
+        return { tag: element.tagName, className: String(element.className || ''), left: rect.left, right: rect.right, width: rect.width };
+      })
+      .filter(rect => rect.right > document.documentElement.clientWidth + 1 || rect.left < -1)
+      .slice(0, 12)
+  }));
+  if (horizontalLayout.documentWidth > horizontalLayout.viewportWidth + 1) {
+    throw new Error(`Settings page overflows horizontally: ${JSON.stringify(horizontalLayout)}`);
+  }
   await window.screenshot({ path: join(screenshotDir, 'desktop-settings-update.png'), fullPage: true });
   if (consoleErrors.length) throw new Error(`Renderer console errors: ${consoleErrors.join(' | ')}`);
 
-  console.log(JSON.stringify({ ...result, verifiedPages: ['发现', '仓库检查与安装', '自动维护', '应用更新'], consoleErrors }, null, 2));
+  console.log(JSON.stringify({ ...result, verifiedPages: ['发现', '仓库检查与安装', '自动维护', '应用更新'], horizontalLayout, consoleErrors }, null, 2));
 } finally {
   await electronApp.close();
   rmSync(userDataDir, { recursive: true, force: true });
