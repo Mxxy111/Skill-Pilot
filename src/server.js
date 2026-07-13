@@ -3,7 +3,9 @@ import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import open from 'open';
+import helmet from 'helmet';
 import { createRoutes } from './routes.js';
+import { startAutomationScheduler } from './core/automation.js';
 
 function resolveUIPath() {
   // Check 1: Running as .app bundle — bundled CJS is in Resources/,
@@ -28,7 +30,14 @@ export function startServer(port = parseInt(process.env.PORT) || 3456) {
   const uiPath = resolveUIPath();
   const app = express();
 
-  app.use(express.json());
+  app.disable('x-powered-by');
+  // Express recommends Helmet and reduced fingerprinting:
+  // https://expressjs.com/en/advanced/best-practice-security.html
+  app.use(helmet({
+    contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'"], imgSrc: ["'self'", 'data:', 'https:'], connectSrc: ["'self'"] } },
+    strictTransportSecurity: false
+  }));
+  app.use(express.json({ limit: '1mb' }));
 
   // CORS origin restriction — only allow localhost
   app.use((req, res, next) => {
@@ -50,9 +59,11 @@ export function startServer(port = parseInt(process.env.PORT) || 3456) {
     res.sendFile(join(uiPath, 'index.html'));
   });
 
-  app.listen(port, () => {
+  const server = app.listen(port, '127.0.0.1', () => {
     const url = `http://localhost:${port}`;
     console.log(`Quiver running at ${url}`);
-    open(url);
+    startAutomationScheduler();
+    if (process.env.SKILLPILOT_NO_OPEN !== '1') open(url);
   });
+  return server;
 }

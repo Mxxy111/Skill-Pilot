@@ -1,31 +1,39 @@
 {
-  "name": "quiver-skill-manager",
-  "version": "0.2.0",
-  "description": "Manage Claude Code skills with a web UI and CLI",
+  "name": "skillpilot-local",
+  "version": "0.3.0",
+  "description": "Local operations center for managing AI Agent Skills across Claude, Codex, OpenClaw, Gemini, Cursor and custom sources",
   "type": "module",
   "bin": {
+    "skillpilot": "./bin/skillpilot.js",
     "quiver": "./bin/quiver.js"
   },
   "files": [
     "bin/",
     "src/",
     "ui/",
-    "README.md"
+    "docs/",
+    "README.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/sam-blakeman/quiver.git"
   },
-  "homepage": "https://skillquiver.com",
+  "homepage": "https://github.com/sam-blakeman/quiver",
   "scripts": {
     "start": "node src/cli.js",
-    "ui": "node src/cli.js ui"
+    "ui": "node src/cli.js ui",
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --check src/routes.js && node --check src/server.js && node --check src/core/automation.js && node --check src/core/bulk.js && node --check ui/app.js"
   },
   "keywords": [
     "claude",
     "claude-code",
     "skills",
     "skill-manager",
+    "codex",
+    "openclaw",
+    "ollama",
     "quiver",
     "cli"
   ],
@@ -36,10 +44,12 @@
     "commander": "^13.1.0",
     "express": "^5.1.0",
     "gray-matter": "^4.0.3",
-    "multer": "^1.4.5-lts.2",
+    "helmet": "^8.3.0",
+    "multer": "^2.2.0",
     "open": "^10.1.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "playwright-core": "^1.61.1"
   }
 }

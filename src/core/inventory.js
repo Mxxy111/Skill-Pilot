@@ -1,58 +1,11 @@
-import { readdirSync, readFileSync, writeFileSync, statSync, lstatSync, existsSync, realpathSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, statSync, existsSync, realpathSync } from 'fs';
 import { join } from 'path';
 import matter from 'gray-matter';
-import { SKILLS_DIR, PLUGINS_DIR, ensureDirs } from './paths.js';
+import { PLUGINS_DIR } from './paths.js';
+import { enrichPluginSkills, listLocalSkills } from './inventory-next.js';
 
 export function listSkills() {
-  ensureDirs();
-  const entries = readdirSync(SKILLS_DIR, { withFileTypes: true });
-  const skills = [];
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-    if (entry.name.startsWith('.')) continue;
-
-    const skillPath = join(SKILLS_DIR, entry.name);
-    const skillFile = join(skillPath, 'SKILL.md');
-
-    let frontmatter = {};
-    let content = '';
-    try {
-      const raw = readFileSync(skillFile, 'utf-8');
-      const parsed = matter(raw);
-      frontmatter = parsed.data;
-      content = parsed.content;
-    } catch {
-      // No SKILL.md or can't parse — still list the directory
-    }
-
-    const lstat = lstatSync(skillPath);
-    const isSymlink = lstat.isSymbolicLink();
-
-    let files = [];
-    try {
-      files = collectFiles(skillPath);
-    } catch {}
-
-    skills.push({
-      name: frontmatter.name || entry.name,
-      dirName: entry.name,
-      description: frontmatter.description || '',
-      tags: frontmatter.tags || [],
-      version: frontmatter.version || null,
-      author: frontmatter.author || null,
-      path: skillPath,
-      isSymlink,
-      files,
-      fileCount: files.length,
-      modified: (() => { try { return statSync(skillPath).mtime.toISOString(); } catch { return new Date().toISOString(); } })(),
-      hasSkillFile: content !== '' || Object.keys(frontmatter).length > 0,
-      source: 'local',
-      pluginName: null
-    });
-  }
-
-  return skills.sort((a, b) => a.name.localeCompare(b.name));
+  return listLocalSkills();
 }
 
 export function listPluginSkills() {
@@ -179,13 +132,13 @@ export function listPluginSkills() {
 }
 
 export function listAll() {
-  return [...listSkills(), ...listPluginSkills()]
+  return [...listSkills(), ...enrichPluginSkills(listPluginSkills())]
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function getSkill(name) {
   const skills = listAll();
-  return skills.find(s => s.name === name || s.dirName === name) || null;
+  return skills.find(s => s.id === name || s.name === name || s.dirName === name) || null;
 }
 
 export function getSkillContent(name) {
@@ -206,7 +159,7 @@ export function getSkillContent(name) {
 export function saveSkillContent(name, raw) {
   const skill = getSkill(name);
   if (!skill) throw new Error(`Skill not found: ${name}`);
-  if (skill.source !== 'local') throw new Error('Only local skills can be edited.');
+  if (skill.source !== 'local' || !skill.isEnabled) throw new Error('Only enabled local skills can be edited.');
 
   const skillFile = join(skill.path, 'SKILL.md');
   writeFileSync(skillFile, raw);

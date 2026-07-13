@@ -16,8 +16,18 @@ import { getUpdateSummary, checkAllUpdates, updatePlugin } from './core/updates.
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { database, validateBackup } from './core/database.js';
+import { listSources as listSkillSources, addCustomSource, updateSource, removeSource } from './core/sources.js';
+import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
+import { searchGithub } from './core/discovery.js';
+import { classifySkills, getAutomationStatus, runMaintenance } from './core/automation.js';
+import { testAI } from './core/ai.js';
 
 const upload = multer({ dest: join(tmpdir(), 'skill-manager-uploads'), limits: { fileSize: 10 * 1024 * 1024 } });
+
+function apiError(res, status, code, message, details) {
+  return res.status(status).json({ error: { code, message, ...(details ? { details } : {}) } });
+}
 
 /* ── Quiver self-update check ─────────────────── */
 const __dirname_routes = dirname(fileURLToPath(import.meta.url));
@@ -113,7 +123,7 @@ export function createRoutes() {
   // Get skill detail with content
   router.get('/skills/:name', (req, res) => {
     try {
-      if (!/^[a-zA-Z0-9_-]+$/.test(req.params.name)) {
+      if (!/^[a-zA-Z0-9_:@.-]+$/.test(req.params.name)) {
         return res.status(400).json({ error: 'Invalid skill name' });
       }
       const skill = getSkillContent(req.params.name);
@@ -127,7 +137,7 @@ export function createRoutes() {
   // Save skill content
   router.put('/skills/:name', (req, res) => {
     try {
-      if (!/^[a-zA-Z0-9_-]+$/.test(req.params.name)) {
+      if (!/^[a-zA-Z0-9_:@.-]+$/.test(req.params.name)) {
         return res.status(400).json({ error: 'Invalid skill name' });
       }
       const { raw } = req.body;
@@ -153,7 +163,7 @@ export function createRoutes() {
   // Remove a skill
   router.delete('/skills/:name', (req, res) => {
     try {
-      if (!/^[a-zA-Z0-9_-]+$/.test(req.params.name)) {
+      if (!/^[a-zA-Z0-9_:@.-]+$/.test(req.params.name)) {
         return res.status(400).json({ error: 'Invalid skill name' });
       }
       removeSkill(req.params.name);
@@ -179,7 +189,7 @@ export function createRoutes() {
   // Export a skill as zip download
   router.get('/skills/:name/export', (req, res) => {
     try {
-      if (!/^[a-zA-Z0-9_-]+$/.test(req.params.name)) {
+      if (!/^[a-zA-Z0-9_:@.-]+$/.test(req.params.name)) {
         return res.status(400).json({ error: 'Invalid skill name' });
       }
       const outPath = exportSkill(req.params.name, tmpdir());
@@ -389,6 +399,99 @@ export function createRoutes() {
   });
 
   // ── Quiver version check ──
+  router.get('/dashboard', (req, res) => {
+    try {
+      const summary = dashboardSummary();
+      summary.updates = getUpdateSummary().total;
+      summary.sources = listSkillSources();
+      res.json(summary);
+    } catch (e) { apiError(res, 500, 'DASHBOARD_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.post('/skills/bulk', (req, res) => {
+    try {
+      const result = runBulkAction(req.body || {});
+      res.json({ ok: true, count: result.length, result });
+    } catch (e) { apiError(res, 400, 'BULK_ACTION_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.post('/skills/bulk/export', (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+      if (!ids.length || ids.length > 200) return apiError(res, 400, 'INVALID_SELECTION', 'Select between 1 and 200 skills.');
+      const outPath = exportSkills(ids);
+      res.download(outPath, 'skillpilot-skills.zip', () => { try { unlinkSync(outPath); } catch {} });
+    } catch (e) { apiError(res, 400, 'EXPORT_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.get('/sources', (req, res) => res.json({ sources: listSkillSources() }));
+  router.post('/sources', (req, res) => {
+    try { res.status(201).json({ source: addCustomSource(req.body || {}) }); }
+    catch (e) { apiError(res, 400, 'SOURCE_INVALID', sanitizeError(e.message)); }
+  });
+  router.patch('/sources/:id', (req, res) => {
+    try { res.json({ source: updateSource(req.params.id, req.body || {}) }); }
+    catch (e) { apiError(res, 400, 'SOURCE_UPDATE_FAILED', sanitizeError(e.message)); }
+  });
+  router.delete('/sources/:id', (req, res) => {
+    try { res.json({ ok: true, source: removeSource(req.params.id) }); }
+    catch (e) { apiError(res, 400, 'SOURCE_REMOVE_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.get('/settings', (req, res) => res.json(database.getPublicSettings()));
+  router.put('/settings', (req, res) => {
+    try {
+      const patch = req.body || {};
+      if (patch.ai?.baseUrl) {
+        const url = new URL(patch.ai.baseUrl);
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error('AI endpoint must use HTTP or HTTPS.');
+      }
+      if (patch.automation?.intervalHours !== undefined) {
+        const hours = Number(patch.automation.intervalHours);
+        if (!Number.isFinite(hours) || hours < 1 || hours > 720) throw new Error('Automation interval must be between 1 and 720 hours.');
+        patch.automation.intervalHours = hours;
+      }
+      database.updateSettings(patch);
+      res.json({ ok: true, settings: database.getPublicSettings() });
+    } catch (e) { apiError(res, 400, 'SETTINGS_INVALID', sanitizeError(e.message)); }
+  });
+
+  router.post('/ai/test', async (req, res) => {
+    try { res.json(await testAI(req.body || {})); }
+    catch (e) { apiError(res, 400, 'AI_CONNECTION_FAILED', sanitizeError(e.message)); }
+  });
+  router.post('/ai/classify', async (req, res) => {
+    try { res.json(await classifySkills(Array.isArray(req.body?.ids) ? req.body.ids : [])); }
+    catch (e) { apiError(res, 400, 'CLASSIFICATION_FAILED', sanitizeError(e.message)); }
+  });
+  router.get('/automation/status', (req, res) => res.json(getAutomationStatus()));
+  router.post('/automation/run', async (req, res) => {
+    try { res.json(await runMaintenance({ classify: req.body?.classify })); }
+    catch (e) { apiError(res, 409, 'MAINTENANCE_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.get('/discovery/github', async (req, res) => {
+    try { res.json(await searchGithub(req.query)); }
+    catch (e) { apiError(res, 502, 'GITHUB_SEARCH_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.get('/database/export', (req, res) => {
+    const data = database.snapshot();
+    data.settings.ai.apiKey = '';
+    data.settings.github.token = '';
+    res.setHeader('Content-Disposition', `attachment; filename="skillpilot-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.type('application/json').send(JSON.stringify(data, null, 2));
+  });
+  router.post('/database/import', upload.single('file'), (req, res) => {
+    try {
+      if (!req.file) return apiError(res, 400, 'FILE_REQUIRED', 'Select a database backup file.');
+      const backup = validateBackup(JSON.parse(readFileSync(req.file.path, 'utf8')));
+      database.replace(backup);
+      res.json({ ok: true, imported: Object.keys(backup.skills).length });
+    } catch (e) { apiError(res, 400, 'BACKUP_INVALID', sanitizeError(e.message)); }
+    finally { try { if (req.file) unlinkSync(req.file.path); } catch {} }
+  });
+
   router.get('/version', async (req, res) => {
     try {
       const latest = await getLatestVersion();

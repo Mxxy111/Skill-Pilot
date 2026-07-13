@@ -1,87 +1,82 @@
-# Quiver
+# SkillPilot
 
-A local web UI and CLI for browsing, installing, and managing Claude Code skills.
+一个本地优先、跨 Agent 的 Skills 管理中心。SkillPilot 将散落在 Claude Code、OpenAI Codex、`.agents`、OpenClaw、Gemini CLI、Cursor 和自定义目录中的 `SKILL.md` 包汇总到一个界面，帮助你减少上下文冗余，并持续维护自己的能力库。
 
-Quiver scans your local skills (`~/.claude/skills/`) and marketplace plugins, showing everything in one searchable interface with source-based colour coding.
+> 本项目基于 Sam Blakeman 的 MIT 开源项目 [Quiver](https://github.com/sam-blakeman/quiver) 扩展而来，保留其本地 Web UI、CLI、导入导出、插件市场与 Git 同步基础。
 
-## Features
+## 主要能力
 
-- **Unified inventory** — local skills and marketplace plugins in one view
-- **Web UI** — tabs, search, drag-and-drop import, skill detail with file paths
-- **CLI** — list, add, remove, import, export skills from the terminal
-- **macOS app** — standalone Quiver.app bundle (~1.8MB)
-- **Launch on startup** — optional auto-start so your bookmark always works
+- 多 Agent 统一索引：内置 6 类扫描目录，并支持任意自定义绝对路径
+- 真正启用/停用：停用项会移出 Agent 的扫描目录，从源头降低上下文负担
+- 批量管理：启用、停用、分类、AI 分类、安全导出、删除前自动备份
+- GitHub 发现：按热门或最近更新搜索不同领域的 Agent Skills 仓库
+- 自定义 AI：兼容 OpenAI Chat Completions API 和本地 Ollama
+- 自动维护：周期检查 Git 更新，可选择自动更新和 AI 分类
+- 数据迁移：版本化 JSON 数据库导入导出，导出时自动移除 API 密钥
+- 本地安全：仅监听 `127.0.0.1`，限制跨域来源，启用 CSP 等安全响应头
+- 原有 Quiver 能力：Skill 编辑、`.skill.zip` 导入导出、Marketplace、Git 同步与 CLI
 
-## Quick Start
+## 快速开始
+
+要求 Node.js 20 或更高版本。
 
 ```bash
-# Install dependencies
 npm install
-
-# Launch the web UI
-node bin/quiver.js ui
+npm run ui
 ```
 
-Opens http://localhost:3456 in your browser.
-
-## CLI Usage
-
-```bash
-# List all skills
-node bin/quiver.js list
-
-# Add a skill (symlink)
-node bin/quiver.js add /path/to/my-skill
-
-# Add a skill (copy)
-node bin/quiver.js add /path/to/my-skill --copy
-
-# Remove a skill
-node bin/quiver.js remove my-skill
-
-# Export a skill as .zip
-node bin/quiver.js export my-skill -o ./exports
-
-# Import a skill from .zip
-node bin/quiver.js import ./my-skill.skill.zip
-```
-
-## Global Install
+浏览器将打开 [http://localhost:3456](http://localhost:3456)。也可以安装为全局 CLI：
 
 ```bash
 npm install -g .
-quiver ui
+skillpilot ui
+skillpilot list
 ```
 
-## Build macOS App
+`quiver` 命令别名仍然保留，便于原项目用户升级。
+
+## AI 配置
+
+在「设置 → 自定义 AI 服务」填写 Base URL、模型和可选 API Key。Ollama 的典型配置：
+
+```text
+Base URL: http://localhost:11434/v1
+Model:    qwen3:8b
+API Key:  留空
+```
+
+Skill 内容只有在你手动运行 AI 分类，或明确启用计划分类后才会发送给配置的模型服务。模型返回值只用于分类、标签、摘要和风险元数据，不会被当作本地执行指令。
+
+## 默认扫描路径
+
+| Agent | 路径 |
+|---|---|
+| Claude Code | `~/.claude/skills` |
+| OpenAI Codex | `~/.codex/skills` |
+| Agent Skills | `~/.agents/skills` |
+| OpenClaw | `~/.openclaw/skills` |
+| Gemini CLI | `~/.gemini/skills` |
+| Cursor | `~/.cursor/skills` |
+
+停用后的包保存在 `~/.skillpilot/disabled/<source-id>/`。批量删除前的自动备份保存在 `~/.skillpilot/backups/`。元数据数据库位于 `~/.skillpilot/database.json`。
+
+## 开发与验证
 
 ```bash
-bash build/build-macos.sh
+npm test
+npm run check
+npm audit --audit-level=high
 ```
 
-Creates `dist/Quiver.app` and `dist/Quiver.zip`.
+测试覆盖数据库往返与密钥脱敏、备份模式校验、AI 响应防御性解析、GitHub 查询契约和 Skill 根目录扫描。产品规格与接口边界见 [docs/spec.md](docs/spec.md) 和 [docs/api.md](docs/api.md)。
 
-Requires Node.js on the machine — the app uses a shell launcher to find your Node installation.
+## 安全说明
 
-## How It Works
+- 不要将 Skill 包视为可信代码。导入或启用前请检查 `SKILL.md`、脚本和依赖。
+- GitHub 与 AI 返回内容均按不可信数据处理，不会直接执行。
+- 批量导出会排除 `.git`、`node_modules`、`.env*`、`.pem` 和 `.key`。
+- 本项目面向单用户本地运行，不应直接暴露到局域网或公网。
 
-Quiver reads skills from two locations:
+## 开源许可
 
-| Source | Path | Badge Colour |
-|--------|------|-------------|
-| Local | `~/.claude/skills/` | Indigo |
-| Marketplace | `~/.claude/plugins/marketplaces/*/plugins/*/` | Teal |
-
-Skills are `.md` files with optional YAML frontmatter for metadata (name, description, tags).
-
-## Tech Stack
-
-- Node.js + Express
-- Preact + HTM (CDN, no build step)
-- Commander.js (CLI)
-- esbuild (app bundling)
-- gray-matter (frontmatter parsing)
-
-## License
-
-MIT
+[MIT](LICENSE)。欢迎提交 Issue 和 Pull Request。贡献指南见 [CONTRIBUTING.md](CONTRIBUTING.md)。

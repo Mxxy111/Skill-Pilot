@@ -10,9 +10,9 @@ import { listAvailablePlugins, listCategories, listSources, setSourceEnabled } f
 import { startServer } from './server.js';
 
 program
-  .name('quiver')
-  .description('Quiver — manage Claude Code skills')
-  .version('0.1.0');
+  .name('skillpilot')
+  .description('Local operations center for AI Agent Skills')
+  .version('0.3.0');
 
 // --- list ---
 program
