@@ -5,6 +5,7 @@ import {
   analyzeRepositoryFiles,
   normalizeCommitSha,
   normalizeRepositorySlug,
+  normalizeSkillSelection,
   validateArchivePath
 } from './repository-security.js';
 
@@ -60,6 +61,25 @@ function isTextPath(path) {
   return TEXT_EXTENSIONS.has(posix.extname(path).toLowerCase()) || posix.basename(path) === 'SKILL.md';
 }
 
+function isRiskScanPath(path) {
+  const name = posix.basename(path);
+  if (name === 'SKILL.md') return true;
+  return ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.sh', '.bash', '.ps1', '.bat', '.cmd'].includes(posix.extname(path).toLowerCase());
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 export function readRepositoryArchive(buffer) {
   if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_ARCHIVE_BYTES) throw new Error('Invalid repository archive.');
   let entries;
@@ -111,9 +131,34 @@ export async function inspectGitHubRepository(repository, options = {}) {
   const tree = await githubJson(`/repos/${canonicalSlug}/git/trees/${commitSha}?recursive=1`, { fetchImpl, token });
   if (!Array.isArray(tree.tree)) throw new Error('GitHub repository tree is incomplete.');
 
-  const archiveBuffer = await downloadRepositoryArchive(canonicalSlug, commitSha, { fetchImpl, token });
-  const archive = readRepositoryArchive(archiveBuffer);
-  const scan = analyzeRepositoryFiles(archive.files, {
+  const blobEntries = tree.tree.filter(entry => entry?.type === 'blob' && typeof entry.path === 'string');
+  const skillRoots = blobEntries
+    .filter(entry => posix.basename(entry.path) === 'SKILL.md')
+    .map(entry => posix.dirname(entry.path));
+  const availableSkills = skillRoots.map(root => ({ name: root === '.' ? canonicalSlug.split('/')[1] : posix.basename(root), path: root }));
+  const selectedRoots = options.skillPaths?.length ? normalizeSkillSelection(options.skillPaths, availableSkills) : skillRoots;
+  const relevantEntries = blobEntries.filter(entry => selectedRoots.some(root => root === '.' || entry.path === `${root}/SKILL.md` || entry.path.startsWith(`${root}/`)));
+  const preliminary = analyzeRepositoryFiles(relevantEntries.map(entry => ({ path: entry.path, size: entry.size, text: '' })), {
+    isTreeTruncated: Boolean(tree.truncated),
+    hasUnsupportedLinks: tree.tree.some(entry => entry?.mode === '120000' || entry?.type === 'commit')
+  });
+  let repositoryFiles = relevantEntries.map(entry => ({ path: entry.path, size: Number(entry.size) || 0, text: '', data: null }));
+  if (preliminary.installable) {
+    const includeFiles = options.includeFiles !== false;
+    repositoryFiles = await mapWithConcurrency(relevantEntries, 6, async entry => {
+      const shouldFetch = includeFiles || isRiskScanPath(entry.path);
+      if (!shouldFetch) return { path: entry.path, size: Number(entry.size) || 0, text: '', data: null };
+      const encodedPath = entry.path.split('/').map(encodeURIComponent).join('/');
+      const response = await fetchImpl(`https://raw.githubusercontent.com/${canonicalSlug}/${commitSha}/${encodedPath}`, {
+        signal: AbortSignal.timeout(30_000)
+      });
+      if (!response.ok) throw new Error(`GitHub raw file download returned HTTP ${response.status}.`);
+      const data = Buffer.from(await response.arrayBuffer());
+      if (data.length > 5 * 1024 * 1024) throw new Error('Repository contains an oversized file.');
+      return { path: entry.path, size: data.length, text: isTextPath(entry.path) && data.length <= MAX_TEXT_BYTES ? data.toString('utf8') : '', data };
+    });
+  }
+  const scan = analyzeRepositoryFiles(repositoryFiles, {
     isTreeTruncated: Boolean(tree.truncated),
     hasUnsupportedLinks: tree.tree.some(entry => entry?.mode === '120000' || entry?.type === 'commit')
   });
@@ -131,11 +176,11 @@ export async function inspectGitHubRepository(repository, options = {}) {
       owner: typeof repo.owner?.login === 'string' ? repo.owner.login : canonicalSlug.split('/')[0]
     },
     scan,
-    archiveBuffer
+    repositoryFiles
   };
 }
 
 export function publicInspection(inspection) {
-  const { archiveBuffer, ...safe } = inspection;
+  const { archiveBuffer, repositoryFiles, ...safe } = inspection;
   return safe;
 }

@@ -37,11 +37,16 @@ test('GitHub inspection follows the default branch and pins an immutable commit'
     if (String(url).includes('/git/trees/')) return Response.json({
       truncated: false,
       tree: [
-        { path: 'skills/writer/SKILL.md', type: 'blob', mode: '100644', size: 38 },
-        { path: 'skills/reviewer/SKILL.md', type: 'blob', mode: '100644', size: 10 }
+        { path: 'skills/writer/SKILL.md', type: 'blob', mode: '100644', size: 38, sha: '1'.repeat(40) },
+        { path: 'skills/writer/scripts/check.js', type: 'blob', mode: '100644', size: 18, sha: '2'.repeat(40) },
+        { path: 'skills/reviewer/SKILL.md', type: 'blob', mode: '100644', size: 10, sha: '3'.repeat(40) }
       ]
     });
-    if (String(url).includes('/zipball/')) return new Response(archive, { headers: { 'content-type': 'application/zip' } });
+    if (String(url).includes('raw.githubusercontent.com/owner/repo/')) {
+      const path = decodeURI(String(url)).split(`${'a'.repeat(40)}/`)[1];
+      const content = path === 'skills/reviewer/SKILL.md' ? '# Reviewer' : path.endsWith('SKILL.md') ? '---\nname: writer\n---\nWrite clearly.' : 'console.log("safe")';
+      return new Response(content);
+    }
     return new Response('not found', { status: 404 });
   };
 
@@ -53,7 +58,9 @@ test('GitHub inspection follows the default branch and pins an immutable commit'
   assert.equal(result.scan.installable, true);
   assert.deepEqual(result.scan.skills.map(skill => skill.path), ['skills/reviewer', 'skills/writer']);
   assert.ok(calls.some(url => url.endsWith('/commits/trunk')));
-  assert.ok(calls.some(url => url.endsWith(`/zipball/${'a'.repeat(40)}`)));
+  assert.ok(calls.some(url => url.includes('raw.githubusercontent.com/owner/repo/')));
+  assert.equal(calls.some(url => url.includes('/zipball/')), false);
+  assert.equal(result.repositoryFiles.length, 3);
 });
 
 test('archive reader removes the GitHub wrapper directory and preserves bounded file data', () => {

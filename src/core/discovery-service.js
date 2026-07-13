@@ -12,7 +12,8 @@ export async function inspectDiscoveryRepository({ repository, useAI = true }, o
   const inspectImpl = options.inspectImpl || inspectGitHubRepository;
   const inspection = await inspectImpl(repository, {
     fetchImpl: options.fetchImpl,
-    token: options.token ?? settings.github.token
+    token: options.token ?? settings.github.token,
+    includeFiles: false
   });
   const result = publicInspection(inspection);
   if (!useAI) return { ...result, ai: { status: 'skipped' } };
@@ -42,7 +43,9 @@ export async function installDiscoveredSkills(input, options = {}) {
   const inspection = await inspectImpl(input.repository, {
     commitSha: input.commitSha,
     fetchImpl: options.fetchImpl,
-    token: options.token ?? settings.github.token
+    token: options.token ?? settings.github.token,
+    includeFiles: true,
+    skillPaths: input.skillPaths
   });
   if (inspection.commitSha !== String(input.commitSha).toLowerCase()) throw new Error('Repository commit changed during inspection.');
   if (!inspection.scan.installable) throw new Error('Repository did not pass the installation safety check.');
@@ -51,10 +54,10 @@ export async function installDiscoveredSkills(input, options = {}) {
   }
 
   const target = (options.targetResolver || getInstallTarget)(input.targetAgent);
-  const archive = (options.archiveReader || readRepositoryArchive)(inspection.archiveBuffer);
+  const files = inspection.repositoryFiles || (options.archiveReader || readRepositoryArchive)(inspection.archiveBuffer).files;
   const installer = options.installer || installRepositoryFiles;
   const installed = installer({
-    files: archive.files,
+    files,
     availableSkills: inspection.scan.skills,
     selectedPaths: input.skillPaths,
     targetRoot: target.path

@@ -87,16 +87,19 @@ export async function checkAllUpdates(options = {}) {
   let skipped = 0;
   let failed = 0;
   let updatesAvailable = 0;
+  let eligible = 0;
+  const latestByRepository = new Map();
 
   for (const [key, saved] of Object.entries(manifest)) {
     const entry = { ...saved, id: saved.id || key };
     manifest[key] = entry;
-    if (!entry.sourceRepo || !entry.commitHash) {
+    if (!entry.sourceRepo || !entry.sourcePath || !entry.commitHash || !entry.installPath) {
       skipped++;
       entry.lastError = 'Source provenance is unavailable.';
       results.push(entry);
       continue;
     }
+    eligible++;
     if (!force && entry.checkedAt && Date.now() - new Date(entry.checkedAt).getTime() < CHECK_INTERVAL) {
       skipped++;
       if (entry.updateAvailable) updatesAvailable++;
@@ -104,7 +107,10 @@ export async function checkAllUpdates(options = {}) {
       continue;
     }
     try {
-      const latestHash = await latest(entry.sourceRepo, { token, fetchImpl: options.fetchImpl });
+      if (!latestByRepository.has(entry.sourceRepo)) {
+        latestByRepository.set(entry.sourceRepo, latest(entry.sourceRepo, { token, fetchImpl: options.fetchImpl }));
+      }
+      const latestHash = await latestByRepository.get(entry.sourceRepo);
       entry.latestCommitHash = latestHash;
       entry.updateAvailable = latestHash !== entry.commitHash;
       entry.checkedAt = new Date().toISOString();
@@ -120,7 +126,7 @@ export async function checkAllUpdates(options = {}) {
   }
 
   save(manifest);
-  return { tracked: results.length, checked, skipped, failed, updatesAvailable, plugins: results };
+  return { tracked: results.length, eligible, checked, skipped, failed, updatesAvailable, plugins: results };
 }
 
 export function getUpdateSummary() {
@@ -128,7 +134,7 @@ export function getUpdateSummary() {
   const updates = entries.filter(entry => entry.updateAvailable);
   return {
     tracked: entries.length,
-    eligible: entries.filter(entry => entry.sourceRepo && entry.sourcePath && entry.commitHash).length,
+    eligible: entries.filter(entry => entry.sourceRepo && entry.sourcePath && entry.commitHash && entry.installPath).length,
     failed: entries.filter(entry => entry.lastError).length,
     updates,
     total: updates.length
@@ -150,16 +156,17 @@ export async function updateTrackedInstall(id, options = {}) {
     const inspection = await (options.inspectImpl || inspectGitHubRepository)(entry.sourceRepo, {
       commitSha: targetCommit,
       token: options.token ?? database.getSettings().github.token,
-      fetchImpl: options.fetchImpl
+      fetchImpl: options.fetchImpl,
+      skillPaths: [entry.sourcePath]
     });
     if (!inspection.scan.installable) throw new Error('Updated repository failed the safety check.');
     if (inspection.scan.risk.requiresAcknowledgement && options.acknowledgeRisk !== true) {
       throw new Error('Updated repository has new high-risk findings and requires manual approval.');
     }
     if (!inspection.scan.skills.some(skill => skill.path === entry.sourcePath)) throw new Error('Tracked skill path no longer exists in the repository.');
-    const archive = (options.archiveReader || readRepositoryArchive)(inspection.archiveBuffer);
+    const files = inspection.repositoryFiles || (options.archiveReader || readRepositoryArchive)(inspection.archiveBuffer).files;
     const replacement = (options.replaceImpl || replaceRepositorySkill)({
-      files: archive.files,
+      files,
       sourcePath: entry.sourcePath,
       installPath: entry.installPath,
       backupRoot: options.backupRoot || BACKUP_DIR

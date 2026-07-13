@@ -32,6 +32,10 @@ const api = {
   testAI: data => request('/api/ai/test', jsonOptions('POST', data)),
   runMaintenance: classify => request('/api/automation/run', jsonOptions('POST', { classify })),
   discover: params => request(`/api/discovery/github?${new URLSearchParams(params)}`),
+  inspectRepository: repository => request('/api/discovery/inspections', jsonOptions('POST', { repository, useAI: true })),
+  recommendRepositories: (query, repositories) => request('/api/discovery/recommendations', jsonOptions('POST', { query, repositories })),
+  installTargets: () => request('/api/skill-installations/targets'),
+  installSkills: data => request('/api/skill-installations', jsonOptions('POST', data)),
   importSkill: file => upload('/api/skills/import', file),
   importDatabase: file => upload('/api/database/import', file)
 };
@@ -53,6 +57,16 @@ function formatDate(value) {
 
 function extractError(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function maintenanceMessage(result) {
+  if (!result) return '维护任务未完成';
+  const parts = [];
+  if (result.updates) parts.push(`检查 ${result.updates.checked}/${result.updates.eligible || 0} 个可追踪来源`);
+  if (result.appliedUpdates?.length) parts.push(`更新 ${result.appliedUpdates.filter(item => item.ok).length} 项`);
+  if (result.classification) parts.push(`分类 ${result.classification.succeeded} 项，剩余 ${result.classification.remaining}`);
+  if (result.failures) parts.push(`${result.failures} 个问题待处理`);
+  return parts.join(' · ') || '维护完成：当前没有可跟踪任务';
 }
 
 const NAV = [
@@ -104,9 +118,10 @@ function App() {
   async function run(task, success) {
     setBusy(true);
     try {
-      await task();
-      if (success) setToast(success);
+      const result = await task();
+      if (success) setToast(typeof success === 'function' ? success(result) : success);
       await refresh();
+      return result;
     } catch (error) { setToast(extractError(error)); }
     finally { setBusy(false); }
   }
@@ -148,10 +163,10 @@ function App() {
         </header>
 
         <div class="page-stage">
-          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => run(() => api.runMaintenance(false), '维护任务已完成')} busy=${busy} />` : ''}
+          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => run(() => api.runMaintenance(false), maintenanceMessage)} busy=${busy} />` : ''}
           ${page === 'library' ? html`<${Library} skills=${skills} search=${globalSearch} selected=${selected} setSelected=${setSelected} onOpen=${async skill => { try { setDetail(await api.detail(skill.id)); } catch (error) { setToast(extractError(error)); } }} onBulk=${(action, category) => run(() => api.bulk({ ids: [...selected], action, category }), '批量操作已完成').then(() => setSelected(new Set()))} onExport=${() => exportSelected([...selected], setToast)} onClassify=${() => run(() => api.classify([...selected]), 'AI 分类已完成')} busy=${busy} />` : ''}
-          ${page === 'discover' ? html`<${Discover} onToast=${setToast} />` : ''}
-          ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${classify => run(() => api.runMaintenance(classify), '维护任务已完成')} />` : ''}
+          ${page === 'discover' ? html`<${Discover} settings=${settings} busy=${busy} onToast=${setToast} onInstall=${payload => run(() => api.installSkills(payload), result => `已安装 ${result.installed.length} 个 Skills 到 ${result.target.name}`)} />` : ''}
+          ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${classify => run(() => api.runMaintenance(classify), maintenanceMessage)} />` : ''}
           ${page === 'settings' ? html`<${Settings} settings=${settings} sources=${sources} busy=${busy} onSave=${patch => run(() => api.saveSettings(patch), '设置已保存')} onTest=${data => run(() => api.testAI(data), 'AI 连接正常')} onSourceToggle=${(id, enabled) => run(() => api.updateSource(id, { enabled }), '来源设置已更新')} onAddSource=${data => run(() => api.addSource(data), '自定义来源已添加')} onRemoveSource=${id => run(() => api.removeSource(id), '来源已移除')} onImportDb=${file => run(() => api.importDatabase(file), '数据库已恢复')} />` : ''}
         </div>
       </main>
@@ -179,7 +194,7 @@ function Dashboard({ data, automation, onNavigate, onRun, busy }) {
         <article class="metric primary-metric"><span>已索引 Skills</span><strong>${data.total}</strong><small>来自 ${data.sources?.filter(source => source.exists).length || 0} 个本地来源</small></article>
         <article class="metric"><span>已启用</span><strong>${data.enabled}</strong><small>${data.total ? Math.round(data.enabled / data.total * 100) : 0}% 正在参与 Agent 上下文</small></article>
         <article class="metric"><span>已停用</span><strong>${data.disabled}</strong><small>已移出 Agent 扫描目录</small></article>
-        <article class="metric"><span>待更新</span><strong>${data.updates || 0}</strong><small>${automation?.lastScheduledRun ? `上次检查 ${formatDate(automation.lastScheduledRun)}` : '尚未执行远程检查'}</small></article>
+        <article class="metric"><span>待更新</span><strong>${data.updates || 0}</strong><small>${automation?.updates?.tracked ? `跟踪 ${automation.updates.eligible}/${automation.updates.tracked} 个来源${automation.lastScheduledRun ? ` · ${formatDate(automation.lastScheduledRun)}` : ''}` : '尚无可跟踪来源；通过“发现”安装后自动登记'}</small></article>
       </div>
       <div class="dashboard-columns">
         <article class="panel category-panel">
@@ -226,24 +241,98 @@ function Library({ skills, search, selected, setSelected, onOpen, onBulk, onExpo
   `;
 }
 
-function Discover({ onToast }) {
+function Discover({ settings, busy, onToast, onInstall }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
   const [sort, setSort] = useState('popular');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [inspecting, setInspecting] = useState('');
+  const [inspection, setInspection] = useState(null);
+  const [targets, setTargets] = useState([]);
+  const [targetAgent, setTargetAgent] = useState('codex');
+  const [selectedPaths, setSelectedPaths] = useState(new Set());
+  const [acknowledgeRisk, setAcknowledgeRisk] = useState(false);
+  const [recommendations, setRecommendations] = useState(new Map());
+  const [recommending, setRecommending] = useState(false);
   async function search() {
     setLoading(true);
-    try { setData(await api.discover({ search: query, category, sort, page: 1 })); }
+    try {
+      setData(await api.discover({ search: query, category, sort, page: 1 }));
+      setRecommendations(new Map());
+    }
     catch (error) { onToast(extractError(error)); }
     finally { setLoading(false); }
   }
+  async function inspect(repo) {
+    setInspecting(repo.name);
+    try {
+      const result = await api.inspectRepository(repo.name);
+      setInspection(result);
+      setSelectedPaths(new Set(result.scan.skills.map(skill => skill.path)));
+      setAcknowledgeRisk(false);
+      const preferred = result.ai?.assessment?.recommendedAgents?.find(id => targets.some(target => target.id === id));
+      setTargetAgent(preferred || targets[0]?.id || 'codex');
+    } catch (error) { onToast(extractError(error)); }
+    finally { setInspecting(''); }
+  }
+  async function recommend() {
+    if (!data?.items?.length) return;
+    setRecommending(true);
+    try {
+      const result = await api.recommendRepositories(query || category || '优质、实用的 Agent Skills', data.items.slice(0, 8).map(repo => ({
+        repository: repo.name,
+        description: repo.description,
+        stars: repo.stars,
+        topics: repo.topics
+      })));
+      setRecommendations(new Map(result.recommendations.map(item => [item.repository.toLowerCase(), item])));
+      onToast(`AI 已评估 ${result.recommendations.length} 个候选仓库`);
+    } catch (error) { onToast(extractError(error)); }
+    finally { setRecommending(false); }
+  }
+  function toggleSkill(path) {
+    setSelectedPaths(current => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }
+  async function install() {
+    const result = await onInstall({
+      repository: inspection.repository,
+      commitSha: inspection.commitSha,
+      targetAgent,
+      skillPaths: [...selectedPaths],
+      acknowledgeRisk
+    });
+    if (result) setInspection(null);
+  }
   useEffect(() => { search(); }, [sort]);
-  return html`<section class="page discover-page"><${PageHeading} eyebrow="GITHUB DISCOVERY" title="发现优质 Skills" description="从 GitHub 热门与近期活跃项目中寻找新的 Agent 能力。" />
+  useEffect(() => { api.installTargets().then(result => setTargets(result.targets || [])).catch(error => onToast(extractError(error))); }, []);
+  return html`<section class="page discover-page"><${PageHeading} eyebrow="GITHUB DISCOVERY" title="发现、检查并安装 Skills" description="搜索 GitHub 项目，固定 commit 后执行静态风险扫描；配置 AI 后还可获得语义判断和个性化推荐。" actions=${settings?.ai?.enabled ? html`<button class="secondary-button" onClick=${recommend} disabled=${recommending || loading || !data?.items?.length}>${recommending ? 'AI 评估中…' : 'AI 智能推荐'}</button>` : html`<button class="secondary-button" onClick=${() => onToast('请先在设置中启用并测试 AI 服务')}>启用 AI 推荐</button>`} />
     <form class="discovery-search" onSubmit=${event => { event.preventDefault(); search(); }}><label><span>⌕</span><input value=${query} onInput=${event => setQuery(event.target.value)} placeholder="例如：医学研究、数据分析、前端设计" aria-label="搜索 GitHub Skills" /></label><select value=${category} onChange=${event => setCategory(event.target.value)}><option value="">全部领域</option><option value="development">开发</option><option value="science">科研</option><option value="data">数据</option><option value="design">设计</option><option value="productivity">效率</option><option value="security">安全</option><option value="writing">写作</option></select><button class="primary-button">搜索</button></form>
     <div class="discover-toolbar"><div class="segmented"><button class=${sort === 'popular' ? 'active' : ''} onClick=${() => setSort('popular')}>热门优先</button><button class=${sort === 'latest' ? 'active' : ''} onClick=${() => setSort('latest')}>最近更新</button></div><span>${data ? `约 ${data.total} 个相关仓库` : ''}</span></div>
-    ${loading ? html`<${LoadingState} />` : data?.items?.length ? html`<div class="repo-grid">${data.items.map(repo => html`<article class="repo-card" key=${repo.id}><div class="repo-owner"><img src=${repo.avatarUrl} alt="" /><span>${repo.owner}</span><span class="repo-license">${repo.license || 'NO LICENSE'}</span></div><h2>${repo.name.split('/')[1]}</h2><p>${repo.description || '该仓库没有提供描述。'}</p><div class="repo-topics">${repo.topics.slice(0, 4).map(topic => html`<span>${topic}</span>`)}</div><div class="repo-footer"><span>★ ${repo.stars.toLocaleString()}</span><span>⑂ ${repo.forks.toLocaleString()}</span><time>${formatDate(repo.updatedAt)}</time><a href=${repo.url} target="_blank" rel="noopener noreferrer">在 GitHub 查看 ↗</a></div></article>`)}</div>` : html`<${EmptyState} title="未找到匹配项目" text="尝试更宽泛的关键词，或切换到热门排序。" />`}
+    ${loading ? html`<${LoadingState} />` : data?.items?.length ? html`<div class="repo-grid">${data.items.map(repo => { const recommendation = recommendations.get(repo.name.toLowerCase()); return html`<article class=${recommendation ? 'repo-card recommended' : 'repo-card'} key=${repo.id}><div class="repo-owner"><img src=${repo.avatarUrl} alt="" /><span>${repo.owner}</span><span class="repo-license">${repo.license || 'NO LICENSE'}</span></div>${recommendation && html`<div class="recommendation-note"><strong>AI ${recommendation.score} 分</strong><span>${recommendation.reason}</span></div>`}<h2>${repo.name.split('/')[1]}</h2><p>${repo.description || '该仓库没有提供描述。'}</p><div class="repo-topics">${repo.topics.slice(0, 4).map(topic => html`<span>${topic}</span>`)}</div><div class="repo-footer"><span>★ ${repo.stars.toLocaleString()}</span><span>⑂ ${repo.forks.toLocaleString()}</span><time>${formatDate(repo.updatedAt)}</time><div class="repo-actions"><a href=${repo.url} target="_blank" rel="noopener noreferrer">GitHub ↗</a><button class="primary-button compact" onClick=${() => inspect(repo)} disabled=${Boolean(inspecting) || busy}>${inspecting === repo.name ? '正在检查…' : '检查并安装'}</button></div></div></article>`; })}</div>` : html`<${EmptyState} title="未找到匹配项目" text="尝试更宽泛的关键词，或切换到热门排序。" />`}
+    ${inspection && html`<${RepositoryInspectionDialog} inspection=${inspection} targets=${targets} targetAgent=${targetAgent} setTargetAgent=${setTargetAgent} selectedPaths=${selectedPaths} toggleSkill=${toggleSkill} acknowledgeRisk=${acknowledgeRisk} setAcknowledgeRisk=${setAcknowledgeRisk} busy=${busy} onInstall=${install} onClose=${() => setInspection(null)} />`}
   </section>`;
+}
+
+function RepositoryInspectionDialog({ inspection, targets, targetAgent, setTargetAgent, selectedPaths, toggleSkill, acknowledgeRisk, setAcknowledgeRisk, busy, onInstall, onClose }) {
+  const { scan, ai } = inspection;
+  const blocked = !scan.installable;
+  const needsAcknowledgement = scan.risk.requiresAcknowledgement;
+  const canInstall = !blocked && selectedPaths.size > 0 && targetAgent && (!needsAcknowledgement || acknowledgeRisk) && !busy;
+  return html`<div class="inspection-overlay" onClick=${event => event.target === event.currentTarget && onClose()}>
+    <section class="inspection-dialog" role="dialog" aria-modal="true" aria-labelledby="inspection-title">
+      <header><div><span class="section-kicker">PINNED REPOSITORY INSPECTION</span><h2 id="inspection-title">${inspection.repository}</h2><code>${inspection.commitSha.slice(0, 12)}</code></div><button class="icon-button" onClick=${onClose} aria-label="关闭仓库检查">×</button></header>
+      <div class="inspection-summary"><div><span>发现 Skills</span><strong>${scan.skills.length}</strong></div><div><span>扫描文件</span><strong>${scan.fileCount}</strong></div><div><span>静态风险</span><strong class=${`risk-text ${scan.risk.level}`}>${scan.risk.level}</strong></div><div><span>许可证</span><strong>${inspection.metadata.license || '未知'}</strong></div></div>
+      ${ai?.status === 'complete' ? html`<article class="ai-assessment"><span class="section-kicker">AI ASSESSMENT · ${Math.round(ai.assessment.confidence * 100)}%</span><h3>${ai.assessment.isSkillRepository ? 'AI 判断为有效 Skills 仓库' : 'AI 判断与 Skills 的相关性较低'}</h3><p>${ai.assessment.summary || 'AI 未提供摘要。'}</p><div>${ai.assessment.categories.map(item => html`<span class="category-badge">${item}</span>`)}</div></article>` : html`<article class="ai-assessment muted"><h3>${ai?.status === 'disabled' ? 'AI 分析未启用' : ai?.status === 'error' ? 'AI 分析失败，静态检查仍然有效' : '未运行 AI 分析'}</h3>${ai?.message && html`<p>${ai.message}</p>`}</article>`}
+      <div class="inspection-columns"><article><div class="inspection-section-title"><h3>选择要安装的 Skills</h3><span>${selectedPaths.size}/${scan.skills.length}</span></div><div class="skill-choice-list">${scan.skills.map(skill => html`<label key=${skill.path}><input type="checkbox" checked=${selectedPaths.has(skill.path)} onChange=${() => toggleSkill(skill.path)} /><span><strong>${skill.name}</strong><small>${skill.path}</small></span></label>`)}</div></article>
+        <article><div class="inspection-section-title"><h3>风险检查结果</h3><span class=${`risk-pill ${scan.risk.level}`}>${scan.risk.level}</span></div>${scan.risk.findings.length ? html`<ul class="risk-findings">${scan.risk.findings.map(item => html`<li><strong>${item.code}</strong><span>${item.message}${item.path ? ` · ${item.path}` : ''}</span></li>`)}</ul>` : html`<p class="clean-scan">未发现已知高风险模式。静态扫描不能替代人工审阅。</p>`}</article></div>
+      <footer><label class="target-select">安装到 Agent<select value=${targetAgent} onChange=${event => setTargetAgent(event.target.value)}>${targets.map(target => html`<option value=${target.id}>${target.name}</option>`)}</select></label>${needsAcknowledgement && html`<label class="risk-ack"><input type="checkbox" checked=${acknowledgeRisk} onChange=${event => setAcknowledgeRisk(event.target.checked)} /><span>我已阅读高风险发现，仍要安装固定 commit</span></label>`}<button class="secondary-button" onClick=${onClose}>取消</button><button class="primary-button" onClick=${onInstall} disabled=${!canInstall}>${busy ? '安装中…' : blocked ? '已阻止安装' : `安装 ${selectedPaths.size} 个 Skills`}</button></footer>
+    </section>
+  </div>`;
 }
 
 function Automation({ status, settings, busy, onSave, onRun }) {
@@ -251,9 +340,10 @@ function Automation({ status, settings, busy, onSave, onRun }) {
   useEffect(() => setForm(settings?.automation || {}), [settings]);
   if (!status || !settings) return html`<${LoadingState} />`;
   const update = patch => setForm(current => ({ ...current, ...patch }));
-  return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="让 Skills 库保持清洁、准确、最新" description="按周期检查远程更新，并可使用自定义 AI 自动补齐分类与标签。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy}>${busy ? '运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)}>保存设置</button>`} />
-    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>SkillPilot 运行期间按计划执行，不上传本地数据库。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>比较已安装插件的远程提交</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用更新</strong><small>仅更新可追踪的 Git 来源</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 自动分类</strong><small>${settings.ai.enabled ? `使用 ${settings.ai.model}` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
-      <article class="panel run-status"><span class=${status.isRunning ? 'run-orb active' : 'run-orb'}></span><span class="section-kicker">运行状态</span><h2>${status.isRunning ? '维护任务执行中' : '系统空闲'}</h2><p>上次计划运行：${formatDate(status.lastScheduledRun)}</p><dl><div><dt>待更新</dt><dd>${status.updates?.total || 0}</dd></div><div><dt>历史记录</dt><dd>${status.history?.length || 0}</dd></div></dl></article></div>
+  return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="可追踪、可回滚的 Skills 维护" description="只更新具有明确 GitHub 来源记录的 Skills；每次更新先静态复检并备份，新增高风险时自动停止。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy}>${busy ? '运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)}>保存设置</button>`} />
+    ${!status.updates?.eligible && html`<div class="maintenance-notice"><strong>当前没有可更新的跟踪来源</strong><span>通过“发现 → 检查并安装”添加的 Skills 会自动记录仓库、commit 和子路径；已有本地 Skills 不会被猜测来源或擅自覆盖。</span></div>`}
+    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>单次 AI 分类数量<select value=${form.classificationBatchSize || 25} onChange=${event => update({ classificationBatchSize: Number(event.target.value) })}><option value="10">10 个</option><option value="25">25 个</option><option value="50">50 个</option><option value="100">100 个</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 分批自动分类</strong><small>${settings.ai.enabled ? `使用 ${settings.ai.model}，优先处理从未分类的 Skills` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
+      <article class="panel run-status"><span class=${status.isRunning ? 'run-orb active' : 'run-orb'}></span><span class="section-kicker">运行状态</span><h2>${status.isRunning ? '维护任务执行中' : '系统空闲'}</h2><p>上次运行：${formatDate(status.lastScheduledRun)}<br />下次计划：${formatDate(status.nextRunAt)}</p><dl><div><dt>可跟踪</dt><dd>${status.updates?.eligible || 0}</dd></div><div><dt>待更新</dt><dd>${status.updates?.total || 0}</dd></div><div><dt>异常</dt><dd>${status.updates?.failed || 0}</dd></div></dl></article></div>
     <article class="panel history-panel"><div class="panel-header"><div><span class="section-kicker">审计记录</span><h2>最近任务</h2></div></div>${status.history?.length ? html`<div class="history-list">${status.history.map(item => html`<div key=${item.id}><span class=${`history-status ${item.status}`}></span><span><strong>${item.message}</strong><small>${item.type}</small></span><time>${formatDate(item.at)}</time></div>`)}</div>` : html`<${EmptyState} title="还没有维护记录" text="运行一次维护任务后，结果会保存在这里。" />`}</article>
   </section>`;
 }
