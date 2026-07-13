@@ -15,21 +15,33 @@ export function saveManifest(data) {
 }
 
 export function recordInstall(name, marketplace, details) {
+  return recordInstalls([{ name, marketplace, ...details }])[0];
+}
+
+export function recordInstalls(installs) {
   const manifest = loadManifest();
-  const key = `${marketplace}/${name}`;
-  manifest[key] = {
-    name,
-    marketplace,
-    installedAt: new Date().toISOString(),
-    installPath: details.installPath || null,
-    sourceRepo: details.sourceRepo || null,
-    commitHash: details.commitHash || null,
-    version: details.version || null,
-    checkedAt: null,
-    latestCommitHash: null,
-    updateAvailable: false
-  };
+  const created = installs.map(details => {
+    const key = details.id || `${details.marketplace}/${details.name}`;
+    const entry = {
+      id: key,
+      name: details.name,
+      marketplace: details.marketplace,
+      installedAt: new Date().toISOString(),
+      installPath: details.installPath || null,
+      sourceRepo: details.sourceRepo || null,
+      sourcePath: details.sourcePath || null,
+      targetAgent: details.targetAgent || null,
+      commitHash: details.commitHash || null,
+      version: details.version || null,
+      checkedAt: null,
+      latestCommitHash: null,
+      updateAvailable: false
+    };
+    manifest[key] = entry;
+    return entry;
+  });
   saveManifest(manifest);
+  return created;
 }
 
 /* ── Update checking ────────────────────────── */

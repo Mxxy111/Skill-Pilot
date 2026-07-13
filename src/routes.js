@@ -17,11 +17,13 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { database, validateBackup } from './core/database.js';
-import { listSources as listSkillSources, addCustomSource, updateSource, removeSource } from './core/sources.js';
+import { listSources as listSkillSources, addCustomSource, updateSource, removeSource, listInstallTargets } from './core/sources.js';
 import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
 import { searchGithub } from './core/discovery.js';
 import { classifySkills, getAutomationStatus, runMaintenance } from './core/automation.js';
 import { testAI } from './core/ai.js';
+import { getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
+import { normalizeCommitSha, normalizeRepositorySlug } from './core/repository-security.js';
 
 const upload = multer({ dest: join(tmpdir(), 'skill-manager-uploads'), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -473,6 +475,39 @@ export function createRoutes() {
   router.get('/discovery/github', async (req, res) => {
     try { res.json(await searchGithub(req.query)); }
     catch (e) { apiError(res, 502, 'GITHUB_SEARCH_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.get('/skill-installations/targets', (req, res) => {
+    res.json({ targets: listInstallTargets().map(({ path, ...target }) => target) });
+  });
+
+  router.post('/discovery/inspections', async (req, res) => {
+    try {
+      const repository = normalizeRepositorySlug(req.body?.repository);
+      res.json(await inspectDiscoveryRepository({ repository, useAI: req.body?.useAI !== false }));
+    } catch (e) { apiError(res, 422, 'REPOSITORY_INSPECTION_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.post('/discovery/recommendations', async (req, res) => {
+    try {
+      res.json(await getDiscoveryRecommendations({ query: req.body?.query, repositories: req.body?.repositories }));
+    } catch (e) { apiError(res, 422, 'RECOMMENDATION_FAILED', sanitizeError(e.message)); }
+  });
+
+  router.post('/skill-installations', async (req, res) => {
+    try {
+      const repository = normalizeRepositorySlug(req.body?.repository);
+      const commitSha = normalizeCommitSha(req.body?.commitSha);
+      const targetAgent = String(req.body?.targetAgent || '');
+      const skillPaths = Array.isArray(req.body?.skillPaths) ? req.body.skillPaths.map(String) : [];
+      res.status(201).json(await installDiscoveredSkills({
+        repository,
+        commitSha,
+        targetAgent,
+        skillPaths,
+        acknowledgeRisk: req.body?.acknowledgeRisk === true
+      }));
+    } catch (e) { apiError(res, 422, 'SKILL_INSTALLATION_FAILED', sanitizeError(e.message)); }
   });
 
   router.get('/database/export', (req, res) => {

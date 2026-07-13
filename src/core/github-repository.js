@@ -105,7 +105,8 @@ export async function inspectGitHubRepository(repository, options = {}) {
     throw new Error('GitHub repository metadata is incomplete.');
   }
   const canonicalSlug = normalizeRepositorySlug(repo.full_name);
-  const commit = await githubJson(`/repos/${canonicalSlug}/commits/${encodeURIComponent(repo.default_branch)}`, { fetchImpl, token });
+  const requestedRef = options.commitSha ? normalizeCommitSha(options.commitSha) : repo.default_branch;
+  const commit = await githubJson(`/repos/${canonicalSlug}/commits/${encodeURIComponent(requestedRef)}`, { fetchImpl, token });
   const commitSha = normalizeCommitSha(commit.sha);
   const tree = await githubJson(`/repos/${canonicalSlug}/git/trees/${commitSha}?recursive=1`, { fetchImpl, token });
   if (!Array.isArray(tree.tree)) throw new Error('GitHub repository tree is incomplete.');
