@@ -90,7 +90,9 @@ Use small ESM modules, explicit names, boundary validation, immutable return val
 - Multi-select batch enable/disable/categorize/delete/export works with confirmations for destructive actions.
 - GitHub results support popular/latest ordering and surface stars, activity, license and topics.
 - AI configuration supports `/v1/chat/completions`, including Ollama-compatible endpoints, with manual and bounded scheduled classification plus optional discovery recommendations.
+- AI classification maps all model output into ten stable top-level categories and scheduled maintenance skips unchanged classifications.
 - GitHub installation is commit-pinned, path-bounded and rescanned immediately before writing; installed provenance supports backup-first atomic updates.
+- Application update checks compare stable semantic versions from the latest published `Mxxy111/Skill-Pilot` GitHub Release and never execute assets automatically.
 - Database import/export is schema-versioned and rejects malformed backups.
 - Empty, loading and error states are present; 320px through 1440px layouts remain usable.
 - Tests and syntax checks pass, the Electron renderer console is clean, and there are no high/critical dependency advisories.

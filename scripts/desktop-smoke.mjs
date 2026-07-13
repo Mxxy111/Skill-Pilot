@@ -14,7 +14,7 @@ const electronApp = await electron.launch({
 
 try {
   await electronApp.context().route('**/api/app-updates/status**', route => route.fulfill({ json: {
-    status: 'update-available', currentVersion: '0.5.0', latestVersion: '0.6.1', updateAvailable: true,
+    status: 'update-available', currentVersion: '0.6.0', latestVersion: '0.6.1', updateAvailable: true,
     checkedAt: '2026-07-13T12:00:00.000Z',
     release: { name: 'SkillPilot 0.6.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.6.1', publishedAt: '2026-07-13T12:00:00.000Z', notes: 'Stable update', assets: [] }
   } }));

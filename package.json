@@ -1,6 +1,6 @@
 {
   "name": "skillpilot-local",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local operations center for managing AI Agent Skills across Claude, Codex, OpenClaw, Gemini, Cursor and custom sources",
   "type": "module",
   "main": "desktop/main.js",
@@ -20,9 +20,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/sam-blakeman/quiver.git"
+    "url": "https://github.com/Mxxy111/Skill-Pilot.git"
   },
-  "homepage": "https://github.com/sam-blakeman/quiver",
+  "homepage": "https://github.com/Mxxy111/Skill-Pilot",
+  "bugs": {
+    "url": "https://github.com/Mxxy111/Skill-Pilot/issues"
+  },
   "scripts": {
     "start": "node src/cli.js",
     "ui": "node src/cli.js ui",
