@@ -62,6 +62,8 @@ a { color: inherit; text-decoration: none; }
 .global-search input { min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); }
 .global-search kbd { padding: 2px 5px; border: 1px solid var(--line); border-bottom-color: var(--line-dark); border-radius: 4px; background: #f5f6f3; color: #84908c; font-size: 9px; }
 .top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.update-chip { min-height: 32px; border: 1px solid #d7b97e; border-radius: var(--radius-small); padding: 0 10px; background: #faf3e4; color: #795316; font-size: 10px; font-weight: 750; cursor: pointer; }
+.update-chip:hover { border-color: var(--amber); background: #fff8e9; }
 .icon-button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--radius-small); background: var(--surface); cursor: pointer; font-size: 18px; }
 .icon-button:hover { border-color: var(--line-dark); background: white; }
 .page-stage { width: min(1480px, 100%); margin: 0 auto; padding: 34px 38px 56px; }
@@ -289,6 +291,11 @@ input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent);
 .settings-card-title { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 17px; }
 .settings-card-title .switch { margin-left: auto; }
 .settings-index { display: grid; place-items: center; width: 35px; height: 35px; flex: 0 0 35px; border-radius: 7px; background: var(--ink); color: white; font-size: 10px; font-weight: 800; }
+.app-update-card { background: linear-gradient(90deg, var(--surface) 0%, #f4f8f5 100%); }
+.update-state { margin-left: auto; padding: 5px 8px; border-radius: 5px; background: #eaeeea; color: var(--ink-soft); font-size: 9px; font-weight: 700; white-space: nowrap; }
+.update-state.available { background: #f8edd9; color: var(--amber); }
+.update-card-actions { display: flex; align-items: center; gap: 8px; padding-left: 47px; }
+.update-card-actions small { margin-left: auto; color: var(--muted); font-size: 9px; }
 .button-stack { display: flex; gap: 8px; }
 .sources-settings { margin-top: 14px; }
 .source-table { padding: 0 12px; }
@@ -391,6 +398,10 @@ input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent);
   .form-grid, .form-grid.three { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .settings-card.wide { grid-column: auto; }
+  .settings-card-title { flex-wrap: wrap; }
+  .update-state { order: 3; width: 100%; margin-left: 47px; white-space: normal; }
+  .update-card-actions { flex-wrap: wrap; padding-left: 0; }
+  .update-card-actions small { width: 100%; margin-left: 0; }
   .button-stack { flex-wrap: wrap; }
   .source-table > div { grid-template-columns: 34px 1fr 42px; padding-block: 10px; }
   .source-table .path-state, .source-table .text-button { display: none; }

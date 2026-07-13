@@ -13,6 +13,11 @@ const electronApp = await electron.launch({
 });
 
 try {
+  await electronApp.context().route('**/api/app-updates/status**', route => route.fulfill({ json: {
+    status: 'update-available', currentVersion: '0.5.0', latestVersion: '0.6.1', updateAvailable: true,
+    checkedAt: '2026-07-13T12:00:00.000Z',
+    release: { name: 'SkillPilot 0.6.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.6.1', publishedAt: '2026-07-13T12:00:00.000Z', notes: 'Stable update', assets: [] }
+  } }));
   const window = await electronApp.firstWindow();
   const consoleErrors = [];
   window.on('console', message => {
@@ -67,9 +72,17 @@ try {
   await window.locator('.nav-item').filter({ hasText: '自动维护' }).click();
   await window.getByRole('heading', { name: '可追踪、可回滚的 Skills 维护' }).waitFor();
   await window.getByText('自动应用低风险更新').waitFor();
+  await window.getByText('稳定结果不会重复覆盖').waitFor();
+
+  await window.locator('.nav-item').filter({ hasText: '设置' }).click();
+  await window.getByRole('heading', { name: '应用更新' }).waitFor();
+  await window.getByText('发现新版本 0.6.1').waitFor();
+  await window.getByRole('button', { name: '立即检查更新' }).click();
+  await window.getByText('发现新版本 0.6.1').waitFor();
+  await window.screenshot({ path: join(screenshotDir, 'desktop-settings-update.png'), fullPage: true });
   if (consoleErrors.length) throw new Error(`Renderer console errors: ${consoleErrors.join(' | ')}`);
 
-  console.log(JSON.stringify({ ...result, verifiedPages: ['发现', '仓库检查与安装', '自动维护'], consoleErrors }, null, 2));
+  console.log(JSON.stringify({ ...result, verifiedPages: ['发现', '仓库检查与安装', '自动维护', '应用更新'], consoleErrors }, null, 2));
 } finally {
   await electronApp.close();
   rmSync(userDataDir, { recursive: true, force: true });

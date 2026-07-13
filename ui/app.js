@@ -36,6 +36,7 @@ const api = {
   recommendRepositories: (query, repositories) => request('/api/discovery/recommendations', jsonOptions('POST', { query, repositories })),
   installTargets: () => request('/api/skill-installations/targets'),
   installSkills: data => request('/api/skill-installations', jsonOptions('POST', data)),
+  checkAppUpdate: force => request(`/api/app-updates/status${force ? '?force=1' : ''}`),
   importSkill: file => upload('/api/skills/import', file),
   importDatabase: file => upload('/api/database/import', file)
 };
@@ -64,7 +65,9 @@ function maintenanceMessage(result) {
   const parts = [];
   if (result.updates) parts.push(`检查 ${result.updates.checked}/${result.updates.eligible || 0} 个可追踪来源`);
   if (result.appliedUpdates?.length) parts.push(`更新 ${result.appliedUpdates.filter(item => item.ok).length} 项`);
-  if (result.classification) parts.push(`分类 ${result.classification.succeeded} 项，剩余 ${result.classification.remaining}`);
+  if (result.classification) parts.push(result.classification.total
+    ? `分类 ${result.classification.succeeded} 项，剩余 ${result.classification.remaining}`
+    : `分类无需更新，保留 ${result.classification.skippedStable || 0} 项`);
   if (result.failures) parts.push(`${result.failures} 个问题待处理`);
   return parts.join(' · ') || '维护完成：当前没有可跟踪任务';
 }
@@ -90,6 +93,8 @@ function App() {
   const [detail, setDetail] = useState(null);
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
+  const [appUpdate, setAppUpdate] = useState(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
 
   async function refresh() {
@@ -103,7 +108,25 @@ function App() {
     setAutomation(automationData);
   }
 
-  useEffect(() => { refresh().catch(error => setToast(extractError(error))); }, []);
+  async function checkAppUpdate(force = false) {
+    setCheckingUpdate(true);
+    try {
+      const result = await api.checkAppUpdate(force);
+      setAppUpdate(result);
+      if (force) setToast(result.updateAvailable
+        ? `发现新版本 ${result.latestVersion}`
+        : result.status === 'unpublished' ? '仓库尚未发布正式 Release' : '当前已是最新版本');
+      return result;
+    } catch (error) {
+      setAppUpdate(current => ({ ...(current || {}), status: 'error', message: extractError(error) }));
+      if (force) setToast(extractError(error));
+    } finally { setCheckingUpdate(false); }
+  }
+
+  useEffect(() => {
+    refresh().catch(error => setToast(extractError(error)));
+    checkAppUpdate(false);
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(''), 3400);
@@ -156,6 +179,7 @@ function App() {
             <kbd>⌘ K</kbd>
           </label>
           <div class="top-actions">
+            ${appUpdate?.updateAvailable && html`<button class="update-chip" onClick=${() => navigate('settings')}>↑ v${appUpdate.latestVersion}</button>`}
             <button class="icon-button" onClick=${() => refresh().then(() => setToast('索引已刷新'))} aria-label="刷新索引">↻</button>
             <button class="primary-button compact" onClick=${() => document.getElementById('skill-import').click()}>导入 Skill</button>
             <input id="skill-import" class="visually-hidden" type="file" accept=".zip" onChange=${event => event.target.files[0] && run(() => api.importSkill(event.target.files[0]), 'Skill 导入成功')} />
@@ -167,7 +191,7 @@ function App() {
           ${page === 'library' ? html`<${Library} skills=${skills} search=${globalSearch} selected=${selected} setSelected=${setSelected} onOpen=${async skill => { try { setDetail(await api.detail(skill.id)); } catch (error) { setToast(extractError(error)); } }} onBulk=${(action, category) => run(() => api.bulk({ ids: [...selected], action, category }), '批量操作已完成').then(() => setSelected(new Set()))} onExport=${() => exportSelected([...selected], setToast)} onClassify=${() => run(() => api.classify([...selected]), 'AI 分类已完成')} busy=${busy} />` : ''}
           ${page === 'discover' ? html`<${Discover} settings=${settings} busy=${busy} onToast=${setToast} onInstall=${payload => run(() => api.installSkills(payload), result => `已安装 ${result.installed.length} 个 Skills 到 ${result.target.name}`)} />` : ''}
           ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${classify => run(() => api.runMaintenance(classify), maintenanceMessage)} />` : ''}
-          ${page === 'settings' ? html`<${Settings} settings=${settings} sources=${sources} busy=${busy} onSave=${patch => run(() => api.saveSettings(patch), '设置已保存')} onTest=${data => run(() => api.testAI(data), 'AI 连接正常')} onSourceToggle=${(id, enabled) => run(() => api.updateSource(id, { enabled }), '来源设置已更新')} onAddSource=${data => run(() => api.addSource(data), '自定义来源已添加')} onRemoveSource=${id => run(() => api.removeSource(id), '来源已移除')} onImportDb=${file => run(() => api.importDatabase(file), '数据库已恢复')} />` : ''}
+          ${page === 'settings' ? html`<${Settings} settings=${settings} sources=${sources} appUpdate=${appUpdate} checkingUpdate=${checkingUpdate} busy=${busy} onCheckUpdate=${() => checkAppUpdate(true)} onSave=${patch => run(() => api.saveSettings(patch), '设置已保存')} onTest=${data => run(() => api.testAI(data), 'AI 连接正常')} onSourceToggle=${(id, enabled) => run(() => api.updateSource(id, { enabled }), '来源设置已更新')} onAddSource=${data => run(() => api.addSource(data), '自定义来源已添加')} onRemoveSource=${id => run(() => api.removeSource(id), '来源已移除')} onImportDb=${file => run(() => api.importDatabase(file), '数据库已恢复')} />` : ''}
         </div>
       </main>
 
@@ -342,13 +366,13 @@ function Automation({ status, settings, busy, onSave, onRun }) {
   const update = patch => setForm(current => ({ ...current, ...patch }));
   return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="可追踪、可回滚的 Skills 维护" description="只更新具有明确 GitHub 来源记录的 Skills；每次更新先静态复检并备份，新增高风险时自动停止。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy}>${busy ? '运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)}>保存设置</button>`} />
     ${!status.updates?.eligible && html`<div class="maintenance-notice"><strong>当前没有可更新的跟踪来源</strong><span>通过“发现 → 检查并安装”添加的 Skills 会自动记录仓库、commit 和子路径；已有本地 Skills 不会被猜测来源或擅自覆盖。</span></div>`}
-    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>单次 AI 分类数量<select value=${form.classificationBatchSize || 25} onChange=${event => update({ classificationBatchSize: Number(event.target.value) })}><option value="10">10 个</option><option value="25">25 个</option><option value="50">50 个</option><option value="100">100 个</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 分批自动分类</strong><small>${settings.ai.enabled ? `使用 ${settings.ai.model}，优先处理从未分类的 Skills` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
+    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>单次 AI 分类数量<select value=${form.classificationBatchSize || 25} onChange=${event => update({ classificationBatchSize: Number(event.target.value) })}><option value="10">10 个</option><option value="25">25 个</option><option value="50">50 个</option><option value="100">100 个</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 分批自动分类</strong><small>${settings.ai.enabled ? `限定为 10 个大类；仅处理未分类或内容已变化的 Skills，稳定结果不会重复覆盖` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
       <article class="panel run-status"><span class=${status.isRunning ? 'run-orb active' : 'run-orb'}></span><span class="section-kicker">运行状态</span><h2>${status.isRunning ? '维护任务执行中' : '系统空闲'}</h2><p>上次运行：${formatDate(status.lastScheduledRun)}<br />下次计划：${formatDate(status.nextRunAt)}</p><dl><div><dt>可跟踪</dt><dd>${status.updates?.eligible || 0}</dd></div><div><dt>待更新</dt><dd>${status.updates?.total || 0}</dd></div><div><dt>异常</dt><dd>${status.updates?.failed || 0}</dd></div></dl></article></div>
     <article class="panel history-panel"><div class="panel-header"><div><span class="section-kicker">审计记录</span><h2>最近任务</h2></div></div>${status.history?.length ? html`<div class="history-list">${status.history.map(item => html`<div key=${item.id}><span class=${`history-status ${item.status}`}></span><span><strong>${item.message}</strong><small>${item.type}</small></span><time>${formatDate(item.at)}</time></div>`)}</div>` : html`<${EmptyState} title="还没有维护记录" text="运行一次维护任务后，结果会保存在这里。" />`}</article>
   </section>`;
 }
 
-function Settings({ settings, sources, busy, onSave, onTest, onSourceToggle, onAddSource, onRemoveSource, onImportDb }) {
+function Settings({ settings, sources, appUpdate, checkingUpdate, busy, onCheckUpdate, onSave, onTest, onSourceToggle, onAddSource, onRemoveSource, onImportDb }) {
   const [ai, setAI] = useState(settings?.ai || {});
   const [github, setGithub] = useState(settings?.github || {});
   const [newSource, setNewSource] = useState({ name: '', path: '' });
@@ -358,9 +382,22 @@ function Settings({ settings, sources, busy, onSave, onTest, onSourceToggle, onA
     <div class="settings-grid"><article class="panel settings-card wide"><div class="settings-card-title"><span class="settings-index">AI</span><div><h2>自定义 AI 服务</h2><p>兼容 OpenAI Chat Completions API 与本地 Ollama。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(ai.enabled)} onChange=${event => setAI({ ...ai, enabled: event.target.checked })} /><span></span></label></div><div class="form-grid three"><label>API Base URL<input value=${ai.baseUrl || ''} onInput=${event => setAI({ ...ai, baseUrl: event.target.value })} placeholder="http://localhost:11434/v1" /></label><label>模型<input value=${ai.model || ''} onInput=${event => setAI({ ...ai, model: event.target.value })} placeholder="qwen3:8b" /></label><label>API Key<input type="password" value=${ai.apiKey || ''} onInput=${event => setAI({ ...ai, apiKey: event.target.value })} placeholder=${ai.hasApiKey ? '已保存，留空则保持不变' : '本地 Ollama 可留空'} /></label></div><button class="secondary-button compact" onClick=${() => onTest(ai)} disabled=${busy || !ai.baseUrl || !ai.model}>测试连接</button></article>
       <article class="panel settings-card"><div class="settings-card-title"><span class="settings-index">GH</span><div><h2>GitHub 发现</h2><p>Token 可提高 API 速率限制。</p></div></div><label>Personal Access Token<input type="password" value=${github.token || ''} onInput=${event => setGithub({ ...github, token: event.target.value })} placeholder=${github.hasToken ? '已安全保存' : '可选'} /></label></article>
       <article class="panel settings-card"><div class="settings-card-title"><span class="settings-index">DB</span><div><h2>数据迁移</h2><p>导出分类、设置与历史，不包含密钥。</p></div></div><div class="button-stack"><a class="secondary-button" href="/api/database/export">导出数据库</a><button class="secondary-button" onClick=${() => document.getElementById('db-import').click()}>恢复数据库</button><input id="db-import" class="visually-hidden" type="file" accept=".json" onChange=${event => event.target.files[0] && onImportDb(event.target.files[0])} /></div></article>
+      <${AppUpdateCard} status=${appUpdate} checking=${checkingUpdate} onCheck=${onCheckUpdate} />
     </div>
     <article class="panel sources-settings"><div class="panel-header"><div><span class="section-kicker">扫描路径</span><h2>Agent 来源</h2></div></div><div class="source-table">${sources.map(source => html`<div key=${source.id}><span class="agent-monogram">${source.name.slice(0, 1)}</span><span><strong>${source.name}</strong><small>${source.path}</small></span><span class=${source.exists ? 'path-state found' : 'path-state'}>${source.exists ? '已发现' : '路径不存在'}</span><label class="switch small"><input type="checkbox" checked=${source.enabled} onChange=${event => onSourceToggle(source.id, event.target.checked)} /><span></span></label>${!source.builtIn ? html`<button class="text-button danger-text" onClick=${() => confirm('仅移除来源配置，不删除文件。继续？') && onRemoveSource(source.id)}>移除</button>` : html`<span></span>`}</div>`)}</div><form class="add-source" onSubmit=${event => { event.preventDefault(); onAddSource(newSource); setNewSource({ name: '', path: '' }); }}><input value=${newSource.name} onInput=${event => setNewSource({ ...newSource, name: event.target.value })} placeholder="来源名称" aria-label="来源名称" /><input value=${newSource.path} onInput=${event => setNewSource({ ...newSource, path: event.target.value })} placeholder="绝对路径，例如 D:\\skills" aria-label="来源绝对路径" /><button class="secondary-button">添加自定义路径</button></form></article>
   </section>`;
+}
+
+function AppUpdateCard({ status, checking, onCheck }) {
+  const state = !status ? '正在检查当前版本…'
+    : status.status === 'update-available' ? `发现新版本 ${status.latestVersion}`
+      : status.status === 'current' ? '当前已是最新版本'
+        : status.status === 'unpublished' ? '仓库尚未发布正式 Release'
+          : `检查失败：${status.message || '请稍后重试'}`;
+  return html`<article class="panel settings-card wide app-update-card">
+    <div class="settings-card-title"><span class="settings-index">UP</span><div><h2>应用更新</h2><p>当前版本 ${status?.currentVersion || '—'} · 通过 GitHub 正式 Release 检查，不会静默下载或安装。</p></div><span class=${status?.updateAvailable ? 'update-state available' : 'update-state'}>${state}</span></div>
+    <div class="update-card-actions"><button class="secondary-button compact" onClick=${onCheck} disabled=${checking}>${checking ? '检查中…' : '立即检查更新'}</button>${status?.release?.url && html`<a class="primary-button compact" href=${status.release.url} target="_blank" rel="noopener noreferrer">查看 GitHub Release</a>`}<small>上次检查：${formatDate(status?.checkedAt)}</small></div>
+  </article>`;
 }
 
 function SkillDrawer({ detail, busy, onClose, onSave }) {
