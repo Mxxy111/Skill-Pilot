@@ -67,6 +67,7 @@ export function analyzeRepositoryFiles(files, options = {}) {
 
   if (!Array.isArray(files)) throw new Error('Repository file list is required.');
   if (options.isTreeTruncated) findings.push(finding('INCOMPLETE_TREE', 'blocked', 'GitHub returned a truncated repository tree.'));
+  if (options.hasUnsupportedLinks) findings.push(finding('UNSUPPORTED_LINK', 'blocked', 'Repository contains symbolic links or submodules.'));
   if (files.length > limits.maxFiles) findings.push(finding('TOO_MANY_FILES', 'blocked', `Repository contains more than ${limits.maxFiles} files.`));
 
   const seen = new Set();
