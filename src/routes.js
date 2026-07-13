@@ -20,7 +20,7 @@ import { database, validateBackup } from './core/database.js';
 import { listSources as listSkillSources, addCustomSource, updateSource, removeSource, listInstallTargets } from './core/sources.js';
 import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
 import { searchGithub } from './core/discovery.js';
-import { classifySkills, getAutomationStatus, runMaintenance } from './core/automation.js';
+import { classifySkills, getAutomationStatus, normalizeAutomationPatch, runMaintenance } from './core/automation.js';
 import { testAI } from './core/ai.js';
 import { getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
 import { normalizeCommitSha, normalizeRepositorySlug } from './core/repository-security.js';
@@ -453,6 +453,12 @@ export function createRoutes() {
         if (!Number.isFinite(hours) || hours < 1 || hours > 720) throw new Error('Automation interval must be between 1 and 720 hours.');
         patch.automation.intervalHours = hours;
       }
+      if (patch.automation?.classificationBatchSize !== undefined) {
+        const size = Number(patch.automation.classificationBatchSize);
+        if (!Number.isInteger(size) || size < 1 || size > 100) throw new Error('Classification batch size must be between 1 and 100.');
+        patch.automation.classificationBatchSize = size;
+      }
+      if (patch.automation) patch.automation = normalizeAutomationPatch(database.getSettings().automation, patch.automation, new Date());
       database.updateSettings(patch);
       res.json({ ok: true, settings: database.getPublicSettings() });
     } catch (e) { apiError(res, 400, 'SETTINGS_INVALID', sanitizeError(e.message)); }

@@ -32,7 +32,7 @@
     "pack:win": "electron-builder --win dir --x64",
     "dist:win": "npm run icon:win && electron-builder --win nsis portable --x64",
     "test": "node --test",
-    "check": "node --check desktop/main.js && node --check desktop/policies.js && node --check src/cli.js && node --check src/routes.js && node --check src/server.js && node --check src/core/automation.js && node --check src/core/bulk.js && node --check src/core/discovery-service.js && node --check src/core/github-repository.js && node --check src/core/repository-installer.js && node --check src/core/repository-security.js && node --check ui/app.js"
+    "check": "node --check desktop/main.js && node --check desktop/policies.js && node --check src/cli.js && node --check src/routes.js && node --check src/server.js && node --check src/core/automation.js && node --check src/core/bulk.js && node --check src/core/discovery-service.js && node --check src/core/github-repository.js && node --check src/core/repository-installer.js && node --check src/core/repository-security.js && node --check src/core/repository-updater.js && node --check ui/app.js"
   },
   "keywords": [
     "claude",

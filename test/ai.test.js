@@ -6,6 +6,7 @@ import {
   parseRepositoryAssessment,
   parseRepositoryRecommendations
 } from '../src/core/ai.js';
+import { selectSkillsForClassification } from '../src/core/automation.js';
 
 test('AI classification parser accepts fenced JSON and normalizes fields', () => {
   const parsed = parseClassificationResponse('```json\n{"category":"Development","tags":["API","api","tool"],"summary":"Builds APIs","risk":"low"}\n```');
@@ -56,4 +57,18 @@ test('AI recommendations cannot introduce repositories outside the supplied cand
     reason: 'Matches the query',
     complements: ['citations']
   }]);
+});
+
+test('scheduled classification prioritizes never-classified skills and reports remaining work', () => {
+  const skills = Array.from({ length: 130 }, (_, index) => ({
+    id: `codex:skill-${index}`,
+    source: 'local',
+    isEnabled: true,
+    lastClassifiedAt: index < 10 ? '2026-01-01T00:00:00.000Z' : null
+  }));
+  const selected = selectSkillsForClassification(skills, [], 25);
+
+  assert.equal(selected.items.length, 25);
+  assert.equal(selected.remaining, 105);
+  assert.ok(selected.items.every(skill => !skill.lastClassifiedAt));
 });

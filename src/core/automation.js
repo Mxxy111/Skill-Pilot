@@ -1,19 +1,41 @@
 import { database } from './database.js';
 import { listAll, getSkillContent } from './inventory.js';
 import { classifySkill } from './ai.js';
-import { checkAllUpdates, getUpdateSummary, updatePlugin } from './updates.js';
+import { checkAllUpdates, getUpdateSummary, updateTrackedInstall } from './updates.js';
 
 let timer = null;
 let isRunning = false;
-let lastScheduledRun = 0;
+
+function nextRunAt(now, intervalHours) {
+  return new Date(now.getTime() + Math.max(1, Number(intervalHours) || 24) * 60 * 60 * 1000).toISOString();
+}
+
+export function normalizeAutomationPatch(current, patch, now = new Date()) {
+  const merged = { ...(current || {}), ...(patch || {}) };
+  if (!merged.enabled) return { ...(patch || {}), nextRunAt: null };
+  const scheduleChanged = !current?.enabled || Number(current.intervalHours) !== Number(merged.intervalHours) || !current.nextRunAt;
+  return { ...(patch || {}), nextRunAt: scheduleChanged ? nextRunAt(now, merged.intervalHours) : current.nextRunAt };
+}
+
+export function selectSkillsForClassification(skills, ids = [], limit = 25) {
+  const wanted = new Set(ids);
+  const eligible = skills
+    .filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id)))
+    .sort((a, b) => {
+      if (!a.lastClassifiedAt && b.lastClassifiedAt) return -1;
+      if (a.lastClassifiedAt && !b.lastClassifiedAt) return 1;
+      return String(a.lastClassifiedAt || '').localeCompare(String(b.lastClassifiedAt || '')) || a.id.localeCompare(b.id);
+    });
+  const batchSize = Math.max(1, Math.min(100, Number(limit) || 25));
+  return { items: eligible.slice(0, batchSize), remaining: Math.max(0, eligible.length - batchSize), eligible: eligible.length };
+}
 
 export async function classifySkills(ids = []) {
   const settings = database.getSettings();
   if (!settings.ai.enabled) throw new Error('AI classification is not enabled.');
-  const wanted = new Set(ids);
-  const skills = listAll().filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id))).slice(0, 100);
+  const selection = selectSkillsForClassification(listAll(), ids, ids.length ? 100 : settings.automation.classificationBatchSize);
   const results = [];
-  for (const skill of skills) {
+  for (const skill of selection.items) {
     try {
       const classification = await classifySkill(getSkillContent(skill.id) || skill);
       database.updateSkill(skill.id, { ...classification, lastClassifiedAt: new Date().toISOString() });
@@ -22,47 +44,100 @@ export async function classifySkills(ids = []) {
       results.push({ id: skill.id, ok: false, error: error.message });
     }
   }
-  database.addHistory({ type: 'classify', status: results.every(item => item.ok) ? 'success' : 'partial', message: `Classified ${results.filter(item => item.ok).length}/${results.length} skills` });
-  return { total: results.length, succeeded: results.filter(item => item.ok).length, results };
+  const succeeded = results.filter(item => item.ok).length;
+  database.addHistory({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });
+  return { total: results.length, succeeded, remaining: selection.remaining, results };
 }
 
-export async function runMaintenance({ classify = null } = {}) {
+export async function runMaintenance({ classify = null, scheduled = false } = {}, options = {}) {
   if (isRunning) throw new Error('Maintenance is already running.');
   isRunning = true;
-  const settings = database.getSettings();
-  const result = { startedAt: new Date().toISOString(), updates: null, classification: null };
+  const settings = options.settings || database.getSettings();
+  const now = options.now || (() => new Date());
+  const updateSettings = options.updateSettings || (patch => database.updateSettings(patch));
+  const addHistory = options.addHistory || (entry => database.addHistory(entry));
+  const result = {
+    startedAt: now().toISOString(),
+    scheduled,
+    updates: null,
+    appliedUpdates: [],
+    classification: null,
+    failures: 0,
+    status: 'success'
+  };
+
   try {
     if (settings.automation.updateChecks) {
-      result.updates = await checkAllUpdates({ force: true });
+      result.updates = await (options.checkImpl || checkAllUpdates)({ force: true });
+      result.failures += Number(result.updates.failed) || 0;
       if (settings.automation.autoUpdate) {
-        for (const plugin of result.updates.plugins.filter(item => item.updateAvailable)) await updatePlugin(plugin.name, plugin.marketplace);
+        for (const plugin of result.updates.plugins.filter(item => item.updateAvailable)) {
+          const applied = await (options.updateImpl || updateTrackedInstall)(plugin.id);
+          result.appliedUpdates.push(applied);
+          if (!applied.ok) result.failures++;
+        }
       }
     }
     const shouldClassify = classify ?? settings.automation.classification;
-    if (shouldClassify && settings.ai.enabled) result.classification = await classifySkills();
-    result.finishedAt = new Date().toISOString();
-    database.addHistory({ type: 'maintenance', status: 'success', message: 'Scheduled maintenance completed', details: result });
-    lastScheduledRun = Date.now();
+    if (shouldClassify && settings.ai.enabled) {
+      result.classification = await (options.classifyImpl || classifySkills)();
+      result.failures += Math.max(0, result.classification.total - result.classification.succeeded);
+    }
+    result.status = result.failures ? 'partial' : 'success';
+    result.finishedAt = now().toISOString();
+    updateSettings({ automation: {
+      lastRunAt: result.finishedAt,
+      nextRunAt: settings.automation.enabled ? nextRunAt(now(), settings.automation.intervalHours) : null
+    } });
+    addHistory({
+      type: 'maintenance',
+      status: result.status,
+      message: result.status === 'success' ? 'Maintenance completed' : `Maintenance completed with ${result.failures} failures`,
+      details: result
+    });
     return result;
   } catch (error) {
-    database.addHistory({ type: 'maintenance', status: 'error', message: error.message });
+    result.status = 'error';
+    result.failures++;
+    result.finishedAt = now().toISOString();
+    updateSettings({ automation: {
+      lastRunAt: result.finishedAt,
+      nextRunAt: settings.automation.enabled ? nextRunAt(now(), settings.automation.intervalHours) : null
+    } });
+    addHistory({ type: 'maintenance', status: 'error', message: error.message, details: result });
     throw error;
-  } finally { isRunning = false; }
+  } finally {
+    isRunning = false;
+  }
 }
 
 export function getAutomationStatus() {
   const data = database.snapshot();
-  return { isRunning, lastScheduledRun: lastScheduledRun ? new Date(lastScheduledRun).toISOString() : null, settings: data.settings.automation, updates: getUpdateSummary(), history: data.history.slice(0, 30) };
+  const automation = data.settings.automation;
+  return {
+    isRunning,
+    lastScheduledRun: automation.lastRunAt || null,
+    nextRunAt: automation.nextRunAt || null,
+    settings: automation,
+    updates: getUpdateSummary(),
+    history: data.history.slice(0, 30)
+  };
+}
+
+function schedulerTick() {
+  const automation = database.getSettings().automation;
+  if (!automation.enabled || isRunning) return;
+  if (!automation.nextRunAt) {
+    database.updateSettings({ automation: normalizeAutomationPatch(automation, { enabled: true }, new Date()) });
+    return;
+  }
+  if (Date.now() >= new Date(automation.nextRunAt).getTime()) runMaintenance({ scheduled: true }).catch(() => {});
 }
 
 export function startAutomationScheduler() {
   if (timer) clearInterval(timer);
-  timer = setInterval(() => {
-    const automation = database.getSettings().automation;
-    if (!automation.enabled || isRunning) return;
-    const interval = Math.max(1, Number(automation.intervalHours) || 24) * 60 * 60 * 1000;
-    if (Date.now() - lastScheduledRun >= interval) runMaintenance().catch(() => {});
-  }, 60_000);
+  schedulerTick();
+  timer = setInterval(schedulerTick, 60_000);
   timer.unref?.();
   return timer;
 }

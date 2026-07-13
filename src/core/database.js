@@ -23,7 +23,11 @@ const DEFAULT_DATA = Object.freeze({
       enabled: false,
       intervalHours: 24,
       updateChecks: true,
-      classification: false
+      autoUpdate: false,
+      classification: false,
+      classificationBatchSize: 25,
+      lastRunAt: null,
+      nextRunAt: null
     }
   },
   history: []

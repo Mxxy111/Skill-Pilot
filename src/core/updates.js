@@ -1,17 +1,27 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { execFileSync } from 'child_process';
-import { MANIFEST_FILE } from './paths.js';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
-/* ── Manifest CRUD ──────────────────────────── */
+import { database } from './database.js';
+import { inspectGitHubRepository, readRepositoryArchive } from './github-repository.js';
+import { BACKUP_DIR, MANIFEST_FILE } from './paths.js';
+import { replaceRepositorySkill } from './repository-updater.js';
+import { normalizeCommitSha, normalizeRepositorySlug } from './repository-security.js';
+
+const CHECK_INTERVAL = 4 * 60 * 60 * 1000;
+const API_VERSION = '2026-03-10';
 
 export function loadManifest() {
   try {
-    return JSON.parse(readFileSync(MANIFEST_FILE, 'utf8'));
+    const value = JSON.parse(readFileSync(MANIFEST_FILE, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   } catch { return {}; }
 }
 
 export function saveManifest(data) {
-  writeFileSync(MANIFEST_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+  mkdirSync(dirname(MANIFEST_FILE), { recursive: true });
+  const temp = `${MANIFEST_FILE}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  renameSync(temp, MANIFEST_FILE);
 }
 
 export function recordInstall(name, marketplace, details) {
@@ -35,7 +45,9 @@ export function recordInstalls(installs) {
       version: details.version || null,
       checkedAt: null,
       latestCommitHash: null,
-      updateAvailable: false
+      updateAvailable: false,
+      lastError: null,
+      lastBackupPath: null
     };
     manifest[key] = entry;
     return entry;
@@ -44,108 +56,133 @@ export function recordInstalls(installs) {
   return created;
 }
 
-/* ── Update checking ────────────────────────── */
-
-const CHECK_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
-
-async function fetchLatestCommit(repo) {
-  if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo)) return null;
-  try {
-    const url = `https://api.github.com/repos/${repo}/commits?per_page=1&sha=main`;
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'Quiver-Skill-Manager' }
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data[0]?.sha || null;
-  } catch { return null; }
+export async function resolveLatestCommit(repository, options = {}) {
+  const slug = normalizeRepositorySlug(repository);
+  const fetchImpl = options.fetchImpl || fetch;
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'SkillPilot-Desktop',
+    'X-GitHub-Api-Version': API_VERSION,
+    ...(options.token ? { Authorization: `Bearer ${options.token}` } : {})
+  };
+  const repoResponse = await fetchImpl(`https://api.github.com/repos/${slug}`, { headers, signal: AbortSignal.timeout(30_000) });
+  if (!repoResponse.ok) throw new Error(`GitHub repository lookup returned HTTP ${repoResponse.status}.`);
+  const repo = await repoResponse.json();
+  if (typeof repo.default_branch !== 'string' || !repo.default_branch) throw new Error('GitHub repository has no default branch.');
+  const commitResponse = await fetchImpl(`https://api.github.com/repos/${slug}/commits/${encodeURIComponent(repo.default_branch)}`, { headers, signal: AbortSignal.timeout(30_000) });
+  if (!commitResponse.ok) throw new Error(`GitHub commit lookup returned HTTP ${commitResponse.status}.`);
+  const commit = await commitResponse.json();
+  return normalizeCommitSha(commit.sha);
 }
 
-export async function checkAllUpdates({ force = false } = {}) {
-  const manifest = loadManifest();
-  const entries = Object.entries(manifest);
-  let checked = 0;
-  let updatesAvailable = 0;
+export async function checkAllUpdates(options = {}) {
+  const force = options.force === true;
+  const load = options.loadManifestImpl || loadManifest;
+  const save = options.saveManifestImpl || saveManifest;
+  const latest = options.resolveLatestCommitImpl || resolveLatestCommit;
+  const token = options.token ?? database.getSettings().github.token;
+  const manifest = load();
   const results = [];
+  let checked = 0;
+  let skipped = 0;
+  let failed = 0;
+  let updatesAvailable = 0;
 
-  for (const [key, entry] of entries) {
-    // Skip if checked recently (unless forced)
-    if (!force && entry.checkedAt) {
-      const elapsed = Date.now() - new Date(entry.checkedAt).getTime();
-      if (elapsed < CHECK_INTERVAL) {
-        if (entry.updateAvailable) updatesAvailable++;
-        results.push(entry);
-        continue;
-      }
+  for (const [key, saved] of Object.entries(manifest)) {
+    const entry = { ...saved, id: saved.id || key };
+    manifest[key] = entry;
+    if (!entry.sourceRepo || !entry.commitHash) {
+      skipped++;
+      entry.lastError = 'Source provenance is unavailable.';
+      results.push(entry);
+      continue;
     }
-
-    const repo = entry.sourceRepo || entry.marketplace;
-    if (!repo) continue;
-
-    const latestHash = await fetchLatestCommit(repo);
-    checked++;
-
-    if (latestHash) {
-      entry.latestCommitHash = latestHash;
-      entry.updateAvailable = !!(entry.commitHash && latestHash !== entry.commitHash);
+    if (!force && entry.checkedAt && Date.now() - new Date(entry.checkedAt).getTime() < CHECK_INTERVAL) {
+      skipped++;
       if (entry.updateAvailable) updatesAvailable++;
+      results.push(entry);
+      continue;
     }
-    entry.checkedAt = new Date().toISOString();
+    try {
+      const latestHash = await latest(entry.sourceRepo, { token, fetchImpl: options.fetchImpl });
+      entry.latestCommitHash = latestHash;
+      entry.updateAvailable = latestHash !== entry.commitHash;
+      entry.checkedAt = new Date().toISOString();
+      entry.lastError = null;
+      checked++;
+      if (entry.updateAvailable) updatesAvailable++;
+    } catch (error) {
+      failed++;
+      entry.checkedAt = new Date().toISOString();
+      entry.lastError = String(error.message || error).slice(0, 240);
+    }
     results.push(entry);
   }
 
-  saveManifest(manifest);
-  return { checked, updatesAvailable, plugins: results };
+  save(manifest);
+  return { tracked: results.length, checked, skipped, failed, updatesAvailable, plugins: results };
 }
 
 export function getUpdateSummary() {
-  const manifest = loadManifest();
-  const updates = Object.values(manifest).filter(e => e.updateAvailable);
-  return { updates, total: updates.length };
+  const entries = Object.values(loadManifest());
+  const updates = entries.filter(entry => entry.updateAvailable);
+  return {
+    tracked: entries.length,
+    eligible: entries.filter(entry => entry.sourceRepo && entry.sourcePath && entry.commitHash).length,
+    failed: entries.filter(entry => entry.lastError).length,
+    updates,
+    total: updates.length
+  };
 }
 
-export async function updatePlugin(name, marketplace) {
-  const manifest = loadManifest();
-  const key = `${marketplace}/${name}`;
+export async function updateTrackedInstall(id, options = {}) {
+  const load = options.loadManifestImpl || loadManifest;
+  const save = options.saveManifestImpl || saveManifest;
+  const manifest = load();
+  const key = Object.keys(manifest).find(item => item === id || manifest[item]?.id === id);
+  if (!key) return { ok: false, error: 'Tracked installation was not found.' };
   const entry = manifest[key];
-
-  if (!entry) return { ok: false, error: 'Plugin not found in manifest' };
-
-  const installPath = entry.installPath;
-  if (!installPath || !existsSync(installPath)) {
-    return { ok: false, error: 'Install path not found' };
-  }
+  if (!entry.sourceRepo || !entry.sourcePath || !entry.installPath) return { ok: false, error: 'Tracked installation has incomplete provenance.' };
+  if (!existsSync(entry.installPath)) return { ok: false, error: 'Tracked installation path was not found.' };
+  const targetCommit = normalizeCommitSha(entry.latestCommitHash || entry.commitHash);
 
   try {
-    // Try git pull if .git exists
-    const gitDir = installPath + '/.git';
-    if (existsSync(gitDir)) {
-      execFileSync('git', ['fetch', 'origin'], { cwd: installPath, stdio: 'pipe' });
-      execFileSync('git', ['reset', '--hard', 'origin/HEAD'], { cwd: installPath, stdio: 'pipe' });
-      const newHash = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: installPath, stdio: 'pipe' }).toString().trim();
-      entry.commitHash = newHash;
-    } else {
-      // No .git - need to re-clone. Import installPlugin dynamically to avoid circular deps
-      const { rmSync } = await import('fs');
-      const { installPlugin } = await import('./registry.js');
-      rmSync(installPath, { recursive: true, force: true });
-      await installPlugin(name, marketplace);
-      // Re-read manifest since installPlugin updates it
-      const updated = loadManifest();
-      if (updated[key]) {
-        entry.commitHash = updated[key].commitHash;
-        entry.installPath = updated[key].installPath;
-      }
+    const inspection = await (options.inspectImpl || inspectGitHubRepository)(entry.sourceRepo, {
+      commitSha: targetCommit,
+      token: options.token ?? database.getSettings().github.token,
+      fetchImpl: options.fetchImpl
+    });
+    if (!inspection.scan.installable) throw new Error('Updated repository failed the safety check.');
+    if (inspection.scan.risk.requiresAcknowledgement && options.acknowledgeRisk !== true) {
+      throw new Error('Updated repository has new high-risk findings and requires manual approval.');
     }
-
+    if (!inspection.scan.skills.some(skill => skill.path === entry.sourcePath)) throw new Error('Tracked skill path no longer exists in the repository.');
+    const archive = (options.archiveReader || readRepositoryArchive)(inspection.archiveBuffer);
+    const replacement = (options.replaceImpl || replaceRepositorySkill)({
+      files: archive.files,
+      sourcePath: entry.sourcePath,
+      installPath: entry.installPath,
+      backupRoot: options.backupRoot || BACKUP_DIR
+    });
+    entry.commitHash = inspection.commitSha;
+    entry.latestCommitHash = inspection.commitSha;
     entry.updateAvailable = false;
-    entry.latestCommitHash = entry.commitHash;
     entry.checkedAt = new Date().toISOString();
-    entry.installedAt = new Date().toISOString();
-    saveManifest(manifest);
-
-    return { ok: true, message: `Updated ${name}` };
-  } catch (e) {
-    return { ok: false, error: e.message };
+    entry.updatedAt = new Date().toISOString();
+    entry.lastBackupPath = replacement.backupPath;
+    entry.lastError = null;
+    save(manifest);
+    return { ok: true, id: entry.id || key, name: entry.name, backupPath: replacement.backupPath, commitHash: entry.commitHash };
+  } catch (error) {
+    entry.lastError = String(error.message || error).slice(0, 240);
+    save(manifest);
+    return { ok: false, id: entry.id || key, name: entry.name, error: entry.lastError };
   }
+}
+
+export async function updatePlugin(name, marketplace, options = {}) {
+  const manifest = (options.loadManifestImpl || loadManifest)();
+  const key = Object.keys(manifest).find(item => manifest[item]?.name === name && manifest[item]?.marketplace === marketplace);
+  if (!key) return { ok: false, error: 'Plugin not found in manifest' };
+  return updateTrackedInstall(manifest[key].id || key, options);
 }
