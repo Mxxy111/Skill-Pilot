@@ -141,11 +141,8 @@ export function getSkill(name) {
   return skills.find(s => s.id === name || s.name === name || s.dirName === name) || null;
 }
 
-export function getSkillContent(name) {
-  const skill = getSkill(name);
+export function readSkillContent(skill) {
   if (!skill) return null;
-
-  // For plugin commands (single .md files), the path IS the file
   const skillFile = skill.path.endsWith('.md') ? skill.path : join(skill.path, 'SKILL.md');
   try {
     const raw = readFileSync(skillFile, 'utf-8');
@@ -154,6 +151,11 @@ export function getSkillContent(name) {
   } catch {
     return { ...skill, content: '', frontmatter: {} };
   }
+}
+
+export function getSkillContent(name) {
+  const skill = getSkill(name);
+  return readSkillContent(skill);
 }
 
 export function saveSkillContent(name, raw) {

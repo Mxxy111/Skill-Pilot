@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { database } from './database.js';
-import { listAll, getSkillContent } from './inventory.js';
+import { listAll, readSkillContent } from './inventory.js';
 import { classifySkill } from './ai.js';
 import { checkAllUpdates, getUpdateSummary, updateTrackedInstall } from './updates.js';
 
@@ -54,24 +54,37 @@ export function selectSkillsForClassification(skills, ids = [], limit = 25, opti
   };
 }
 
+export function prepareClassificationBatch(skills, ids = [], limit = 25, readContent = readSkillContent, options = {}) {
+  const selection = selectSkillsForClassification(skills, ids, limit, options);
+  return {
+    ...selection,
+    items: selection.items.map(skill => {
+      const input = readContent(skill) || skill;
+      return {
+        ...skill,
+        classificationInput: input,
+        classificationFingerprint: classificationFingerprint(input)
+      };
+    })
+  };
+}
+
 export async function classifySkills(ids = [], options = {}) {
-  const settings = database.getSettings();
+  const settings = options.settings || database.getSettings();
   if (!settings.ai.enabled) throw new Error('AI classification is not enabled.');
-  const skills = listAll().map(skill => {
-    const input = getSkillContent(skill.id) || skill;
-    return { ...skill, classificationInput: input, classificationFingerprint: classificationFingerprint(input) };
-  });
-  const selection = selectSkillsForClassification(
+  const skills = (options.inventoryImpl || listAll)();
+  const selection = prepareClassificationBatch(
     skills,
     ids,
     ids.length ? 100 : settings.automation.classificationBatchSize,
+    options.readContentImpl || readSkillContent,
     { force: ids.length > 0 }
   );
   const results = [];
   for (const skill of selection.items) {
     try {
-      const classification = await classifySkill(skill.classificationInput);
-      database.updateSkill(skill.id, {
+      const classification = await (options.classifyImpl || classifySkill)(skill.classificationInput);
+      (options.updateSkill || ((id, patch) => database.updateSkill(id, patch)))(skill.id, {
         ...classification,
         lastClassifiedAt: new Date().toISOString(),
         lastClassificationFingerprint: skill.classificationFingerprint
@@ -83,7 +96,7 @@ export async function classifySkills(ids = [], options = {}) {
   }
   const succeeded = results.filter(item => item.ok).length;
   if (options.recordHistory !== false) {
-    database.addHistory({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });
+    (options.addHistory || (entry => database.addHistory(entry)))({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });
   }
   return { total: results.length, succeeded, remaining: selection.remaining, skippedStable: selection.skippedStable, results };
 }

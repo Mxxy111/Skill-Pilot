@@ -7,7 +7,7 @@ import {
   parseRepositoryAssessment,
   parseRepositoryRecommendations
 } from '../src/core/ai.js';
-import { selectSkillsForClassification } from '../src/core/automation.js';
+import { prepareClassificationBatch, selectSkillsForClassification } from '../src/core/automation.js';
 
 test('AI classification parser accepts fenced JSON and normalizes fields', () => {
   const parsed = parseClassificationResponse('```json\n{"category":"Development","tags":["API","api","tool"],"summary":"Builds APIs","risk":"low"}\n```');
@@ -84,4 +84,26 @@ test('manual classification can intentionally refresh a stable selected skill', 
   const skills = [{ id: 'codex:stable', source: 'local', isEnabled: true, lastClassifiedAt: '2026-02-01T00:00:00.000Z', modified: '2026-01-01T00:00:00.000Z' }];
   const selected = selectSkillsForClassification(skills, ['codex:stable'], 25, { force: true });
   assert.deepEqual(selected.items.map(skill => skill.id), ['codex:stable']);
+});
+
+test('AI classification loads content only for the selected batch', () => {
+  const skills = Array.from({ length: 200 }, (_, index) => ({
+    id: `codex:skill-${index}`,
+    name: `skill-${index}`,
+    source: 'local',
+    isEnabled: true,
+    lastClassifiedAt: null,
+    modified: '2026-07-14T00:00:00.000Z'
+  }));
+  let contentReads = 0;
+  const result = prepareClassificationBatch(
+    skills,
+    [],
+    10,
+    skill => { contentReads++; return { ...skill, content: `content ${skill.id}`, frontmatter: {} }; }
+  );
+
+  assert.equal(result.items.length, 10);
+  assert.equal(result.remaining, 190);
+  assert.equal(contentReads, 10);
 });
