@@ -96,7 +96,7 @@ export async function classifySkills(ids = [], options = {}) {
     completed: 0,
     total: selection.items.length,
     remaining: selection.remaining,
-    message: selection.items.length ? `Preparing ${selection.items.length} skills for AI classification` : 'No skills require classification'
+    message: selection.items.length ? `准备分类 ${selection.items.length} 个 Skills` : '没有需要重新分类的 Skills'
   });
   for (const [index, skill] of selection.items.entries()) {
     options.signal?.throwIfAborted?.();
@@ -118,7 +118,7 @@ export async function classifySkills(ids = [], options = {}) {
       total: selection.items.length,
       remaining: selection.remaining,
       current: skill.name,
-      message: `Classified ${index + 1}/${selection.items.length}`
+      message: `已分类 ${index + 1}/${selection.items.length}`
     });
   }
   const succeeded = results.filter(item => item.ok).length;
@@ -146,9 +146,9 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
   };
 
   try {
-    reportProgress(options.onProgress, { phase: 'starting', completed: 0, total: 0, message: 'Preparing maintenance' });
+    reportProgress(options.onProgress, { phase: 'starting', completed: 0, total: 0, message: '正在准备维护环境' });
     if (settings.automation.updateChecks) {
-      reportProgress(options.onProgress, { phase: 'updates', completed: 0, total: 0, message: 'Checking tracked sources' });
+      reportProgress(options.onProgress, { phase: 'updates', completed: 0, total: 0, message: '正在检查可追踪来源' });
       result.updates = await (options.checkImpl || checkAllUpdates)({ force: true });
       result.failures += Number(result.updates.failed) || 0;
       if (settings.automation.autoUpdate) {
@@ -180,7 +180,7 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
       message: result.status === 'success' ? 'Maintenance completed' : `Maintenance completed with ${result.failures} failures`,
       details: result
     });
-    reportProgress(options.onProgress, { phase: 'complete', completed: 1, total: 1, message: 'Maintenance completed' });
+    reportProgress(options.onProgress, { phase: 'complete', completed: 1, total: 1, message: '维护任务已完成' });
     return result;
   } catch (error) {
     result.status = 'error';
@@ -210,7 +210,7 @@ export function startMaintenance(input = {}, options = {}) {
     total: 0,
     remaining: 0,
     current: null,
-    message: 'Maintenance queued',
+    message: '维护任务已进入队列',
     startedAt: new Date().toISOString(),
     finishedAt: null,
     result: null,
@@ -220,7 +220,7 @@ export function startMaintenance(input = {}, options = {}) {
     if (currentRun?.id !== id) return;
     currentRun = { ...currentRun, ...progress };
   };
-  Promise.resolve()
+  new Promise(resolve => setImmediate(resolve))
     .then(() => runMaintenance(input, { ...options, onProgress, signal: controller.signal }))
     .then(result => {
       if (currentRun?.id !== id) return;
@@ -230,7 +230,7 @@ export function startMaintenance(input = {}, options = {}) {
         phase: 'complete',
         completed: 1,
         total: 1,
-        message: result.status === 'success' ? 'Maintenance completed' : 'Maintenance completed with issues',
+        message: result.status === 'success' ? '维护任务已完成' : '维护完成，存在需要处理的问题',
         finishedAt: result.finishedAt,
         result
       };
@@ -242,7 +242,7 @@ export function startMaintenance(input = {}, options = {}) {
         ...currentRun,
         status: cancelled ? 'cancelled' : 'error',
         phase: cancelled ? 'cancelled' : 'error',
-        message: cancelled ? 'Maintenance cancelled' : error.message,
+        message: cancelled ? '维护任务已停止' : error.message,
         error: cancelled ? null : error.message,
         finishedAt: new Date().toISOString()
       };
@@ -256,7 +256,7 @@ export function startMaintenance(input = {}, options = {}) {
 export function cancelMaintenance(id) {
   if (!currentRun || currentRun.status !== 'running' || !currentController) throw new Error('No maintenance run is active.');
   if (id && id !== currentRun.id) throw new Error('Maintenance run does not match the active task.');
-  currentRun = { ...currentRun, status: 'cancelling', message: 'Stopping after the current operation' };
+  currentRun = { ...currentRun, status: 'cancelling', message: '当前操作结束后停止任务' };
   currentController.abort(new Error('Maintenance cancelled.'));
   return runSnapshot();
 }
