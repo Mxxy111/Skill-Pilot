@@ -2,10 +2,51 @@ import { rmSync } from 'node:fs';
 
 import { assessRepository, recommendRepositories } from './ai.js';
 import { database } from './database.js';
+import { searchGithub } from './discovery.js';
 import { inspectGitHubRepository, publicInspection, readRepositoryArchive } from './github-repository.js';
 import { installRepositoryFiles } from './repository-installer.js';
 import { getInstallTarget } from './sources.js';
+import { discoverSkillsCatalog, expandDiscoveryQuery } from './skills-catalog.js';
 import { recordInstalls } from './updates.js';
+
+export async function getDiscoveryCatalog(input = {}, options = {}) {
+  try {
+    return await (options.catalogImpl || discoverSkillsCatalog)(input, options);
+  } catch (catalogError) {
+    const resolvedQuery = expandDiscoveryQuery(input.search, input.category) || 'agent skills workflow';
+    const fallback = await (options.githubImpl || searchGithub)({
+      search: resolvedQuery,
+      category: '',
+      sort: input.view === 'trending' ? 'latest' : 'popular',
+      page: 1
+    });
+    return {
+      source: 'github-fallback',
+      view: input.view || 'popular',
+      query: String(input.search || ''),
+      resolvedQuery,
+      searchType: 'repository-fallback',
+      total: fallback.items.length,
+      warning: `Skills index unavailable: ${String(catalogError.message || catalogError).slice(0, 160)}`,
+      items: fallback.items.map((repository, index) => ({
+        id: `github:${repository.name}`,
+        skillName: repository.name.split('/').at(-1),
+        repository: repository.name,
+        installs: 0,
+        change: 0,
+        rank: index + 1,
+        url: repository.url,
+        source: 'github',
+        view: 'fallback',
+        stars: repository.stars,
+        description: repository.description,
+        topics: repository.topics,
+        license: repository.license,
+        updatedAt: repository.updatedAt
+      }))
+    };
+  }
+}
 
 export async function inspectDiscoveryRepository({ repository, useAI = true }, options = {}) {
   const settings = database.getSettings();

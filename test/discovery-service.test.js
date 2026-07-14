@@ -4,7 +4,24 @@ import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { installDiscoveredSkills } from '../src/core/discovery-service.js';
+import { getDiscoveryCatalog, installDiscoveredSkills } from '../src/core/discovery-service.js';
+
+test('discovery falls back to GitHub repositories when the skills index is unavailable', async () => {
+  const result = await getDiscoveryCatalog({ search: 'PPT', view: 'popular' }, {
+    catalogImpl: async () => { throw new Error('catalog offline'); },
+    githubImpl: async input => {
+      assert.match(input.search, /presentation/);
+      return { items: [{
+        name: 'owner/presentation-skills', url: 'https://github.com/owner/presentation-skills', description: 'Slides',
+        stars: 120, topics: ['slides'], license: 'MIT', updatedAt: '2026-07-01T00:00:00.000Z'
+      }] };
+    }
+  });
+  assert.equal(result.source, 'github-fallback');
+  assert.equal(result.items[0].repository, 'owner/presentation-skills');
+  assert.equal(result.items[0].stars, 120);
+  assert.match(result.warning, /catalog offline/);
+});
 
 function inspection(riskLevel = 'low') {
   return {

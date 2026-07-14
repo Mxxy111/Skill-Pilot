@@ -20,7 +20,7 @@ import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
 import { searchGithub } from './core/discovery.js';
 import { cancelMaintenance, classifySkills, getAutomationStatus, normalizeAutomationPatch, startMaintenance } from './core/automation.js';
 import { testAI } from './core/ai.js';
-import { getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
+import { getDiscoveryCatalog, getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
 import { normalizeCommitSha, normalizeRepositorySlug } from './core/repository-security.js';
 import { checkForAppUpdate, CURRENT_VERSION } from './core/app-updates.js';
 
@@ -462,6 +462,10 @@ export function createRoutes() {
   router.get('/discovery/github', async (req, res) => {
     try { res.json(await searchGithub(req.query)); }
     catch (e) { apiError(res, 502, 'GITHUB_SEARCH_FAILED', sanitizeError(e.message)); }
+  });
+  router.get('/discovery/catalog', async (req, res) => {
+    try { res.json(await getDiscoveryCatalog(req.query)); }
+    catch (e) { apiError(res, 502, 'DISCOVERY_CATALOG_FAILED', sanitizeError(e.message)); }
   });
 
   router.get('/skill-installations/targets', (req, res) => {
