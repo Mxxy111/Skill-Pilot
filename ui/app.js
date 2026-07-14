@@ -1,5 +1,5 @@
 import { h, render } from './vendor/preact.mjs';
-import { useEffect, useMemo, useState } from './vendor/preact-hooks.mjs';
+import { useEffect, useMemo, useRef, useState } from './vendor/preact-hooks.mjs';
 import htm from './vendor/htm.mjs';
 
 const html = htm.bind(h);
@@ -31,6 +31,7 @@ const api = {
   classify: ids => request('/api/ai/classify', jsonOptions('POST', { ids })),
   testAI: data => request('/api/ai/test', jsonOptions('POST', data)),
   runMaintenance: classify => request('/api/automation/run', jsonOptions('POST', { classify })),
+  cancelMaintenance: id => request('/api/automation/run/cancel', jsonOptions('POST', { id })),
   discover: params => request(`/api/discovery/github?${new URLSearchParams(params)}`),
   inspectRepository: repository => request('/api/discovery/inspections', jsonOptions('POST', { repository, useAI: true })),
   recommendRepositories: (query, repositories) => request('/api/discovery/recommendations', jsonOptions('POST', { query, repositories })),
@@ -96,6 +97,7 @@ function App() {
   const [appUpdate, setAppUpdate] = useState(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
+  const reportedRun = useRef(null);
 
   async function refresh() {
     const [skillData, dashData, settingData, sourceData, automationData] = await Promise.all([
@@ -133,6 +135,24 @@ function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const activeRun = automation?.run;
+    if (!activeRun || !['running', 'cancelling'].includes(activeRun.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const status = await api.automation();
+        setAutomation(status);
+        const runState = status.run;
+        if (runState && !['running', 'cancelling'].includes(runState.status) && reportedRun.current !== runState.id) {
+          reportedRun.current = runState.id;
+          setToast(runState.status === 'cancelled' ? '维护任务已停止' : runState.error || maintenanceMessage(runState.result));
+          await refresh();
+        }
+      } catch (error) { setToast(extractError(error)); }
+    }, 700);
+    return () => clearInterval(timer);
+  }, [automation?.run?.id, automation?.run?.status]);
+
   function navigate(target) {
     setPage(target);
     setSelected(new Set());
@@ -147,6 +167,23 @@ function App() {
       return result;
     } catch (error) { setToast(extractError(error)); }
     finally { setBusy(false); }
+  }
+
+  async function startMaintenance(classify) {
+    try {
+      const response = await api.runMaintenance(classify);
+      reportedRun.current = null;
+      setAutomation(current => ({ ...(current || {}), run: response.run, isRunning: true }));
+      setToast('维护任务已转入后台运行，界面可以继续操作');
+      return response.run;
+    } catch (error) { setToast(extractError(error)); }
+  }
+
+  async function cancelMaintenance() {
+    try {
+      const response = await api.cancelMaintenance(automation?.run?.id);
+      setAutomation(current => ({ ...(current || {}), run: response.run }));
+    } catch (error) { setToast(extractError(error)); }
   }
 
   return html`
@@ -187,10 +224,10 @@ function App() {
         </header>
 
         <div class="page-stage">
-          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => run(() => api.runMaintenance(false), maintenanceMessage)} busy=${busy} />` : ''}
+          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => startMaintenance(false)} busy=${busy || ['running', 'cancelling'].includes(automation?.run?.status)} />` : ''}
           ${page === 'library' ? html`<${Library} skills=${skills} search=${globalSearch} selected=${selected} setSelected=${setSelected} onOpen=${async skill => { try { setDetail(await api.detail(skill.id)); } catch (error) { setToast(extractError(error)); } }} onBulk=${(action, category) => run(() => api.bulk({ ids: [...selected], action, category }), '批量操作已完成').then(() => setSelected(new Set()))} onExport=${() => exportSelected([...selected], setToast)} onClassify=${() => run(() => api.classify([...selected]), 'AI 分类已完成')} busy=${busy} />` : ''}
           ${page === 'discover' ? html`<${Discover} settings=${settings} busy=${busy} onToast=${setToast} onInstall=${payload => run(() => api.installSkills(payload), result => `已安装 ${result.installed.length} 个 Skills 到 ${result.target.name}`)} />` : ''}
-          ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${classify => run(() => api.runMaintenance(classify), maintenanceMessage)} />` : ''}
+          ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${startMaintenance} onCancel=${cancelMaintenance} />` : ''}
           ${page === 'settings' ? html`<${Settings} settings=${settings} sources=${sources} appUpdate=${appUpdate} checkingUpdate=${checkingUpdate} busy=${busy} onCheckUpdate=${() => checkAppUpdate(true)} onSave=${patch => run(() => api.saveSettings(patch), '设置已保存')} onTest=${data => run(() => api.testAI(data), 'AI 连接正常')} onSourceToggle=${(id, enabled) => run(() => api.updateSource(id, { enabled }), '来源设置已更新')} onAddSource=${data => run(() => api.addSource(data), '自定义来源已添加')} onRemoveSource=${id => run(() => api.removeSource(id), '来源已移除')} onImportDb=${file => run(() => api.importDatabase(file), '数据库已恢复')} />` : ''}
         </div>
       </main>
@@ -359,12 +396,29 @@ function RepositoryInspectionDialog({ inspection, targets, targetAgent, setTarge
   </div>`;
 }
 
-function Automation({ status, settings, busy, onSave, onRun }) {
+function MaintenanceRun({ run, onCancel }) {
+  if (!run) return null;
+  const active = ['running', 'cancelling'].includes(run.status);
+  const progress = run.total > 0 ? Math.round(run.completed / run.total * 100) : 0;
+  const phase = {
+    queued: '等待启动', starting: '准备环境', updates: '检查来源', classification: 'AI 分类',
+    complete: '运行完成', error: '运行失败', cancelled: '已停止'
+  }[run.phase] || '处理中';
+  return html`<article class=${active ? 'maintenance-progress active' : `maintenance-progress ${run.status}`} aria-live="polite">
+    <div class="maintenance-progress-head"><div class="run-glyph" aria-hidden="true"><i></i><i></i><i></i></div><div><span>${phase}</span><h2>${run.message || '正在维护 Skills'}</h2><p>${run.current ? `当前：${run.current}` : active ? '任务在后台运行，你可以继续浏览和管理 Skills。' : formatDate(run.finishedAt)}</p></div>${active && html`<button class="secondary-button compact" onClick=${onCancel} disabled=${run.status === 'cancelling'}>${run.status === 'cancelling' ? '正在停止…' : '停止任务'}</button>`}</div>
+    <div class="progress-track" role="progressbar" aria-label="维护进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${progress}><i style=${`transform: scaleX(${run.total ? Math.max(.025, run.completed / run.total) : .025})`}></i></div>
+    <div class="progress-meta"><span>${run.total ? `${run.completed} / ${run.total}` : '正在计算工作量'}</span><span>${run.remaining ? `本批完成后仍有 ${run.remaining} 项` : active ? '保持应用开启即可' : run.status}</span></div>
+  </article>`;
+}
+
+function Automation({ status, settings, busy, onSave, onRun, onCancel }) {
   const [form, setForm] = useState(settings?.automation || {});
   useEffect(() => setForm(settings?.automation || {}), [settings]);
   if (!status || !settings) return html`<${LoadingState} />`;
   const update = patch => setForm(current => ({ ...current, ...patch }));
-  return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="可追踪、可回滚的 Skills 维护" description="只更新具有明确 GitHub 来源记录的 Skills；每次更新先静态复检并备份，新增高风险时自动停止。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy}>${busy ? '运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)}>保存设置</button>`} />
+  const maintenanceActive = ['running', 'cancelling'].includes(status?.run?.status);
+  return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="可追踪、可回滚的 Skills 维护" description="只更新具有明确 GitHub 来源记录的 Skills；每次更新先静态复检并备份，新增高风险时自动停止。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy || maintenanceActive}>${maintenanceActive ? '后台运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)} disabled=${busy}>保存设置</button>`} />
+    <${MaintenanceRun} run=${status?.run} onCancel=${onCancel} />
     ${!status.updates?.eligible && html`<div class="maintenance-notice"><strong>当前没有可更新的跟踪来源</strong><span>通过“发现 → 检查并安装”添加的 Skills 会自动记录仓库、commit 和子路径；已有本地 Skills 不会被猜测来源或擅自覆盖。</span></div>`}
     <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>单次 AI 分类数量<select value=${form.classificationBatchSize || 25} onChange=${event => update({ classificationBatchSize: Number(event.target.value) })}><option value="10">10 个</option><option value="25">25 个</option><option value="50">50 个</option><option value="100">100 个</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 分批自动分类</strong><small>${settings.ai.enabled ? `限定为 10 个大类；仅处理未分类或内容已变化的 Skills，稳定结果不会重复覆盖` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
       <article class="panel run-status"><span class=${status.isRunning ? 'run-orb active' : 'run-orb'}></span><span class="section-kicker">运行状态</span><h2>${status.isRunning ? '维护任务执行中' : '系统空闲'}</h2><p>上次运行：${formatDate(status.lastScheduledRun)}<br />下次计划：${formatDate(status.nextRunAt)}</p><dl><div><dt>可跟踪</dt><dd>${status.updates?.eligible || 0}</dd></div><div><dt>待更新</dt><dd>${status.updates?.total || 0}</dd></div><div><dt>异常</dt><dd>${status.updates?.failed || 0}</dd></div></dl></article></div>

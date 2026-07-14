@@ -18,7 +18,7 @@ import { database, validateBackup } from './core/database.js';
 import { listSources as listSkillSources, addCustomSource, updateSource, removeSource, listInstallTargets } from './core/sources.js';
 import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
 import { searchGithub } from './core/discovery.js';
-import { classifySkills, getAutomationStatus, normalizeAutomationPatch, runMaintenance } from './core/automation.js';
+import { cancelMaintenance, classifySkills, getAutomationStatus, normalizeAutomationPatch, startMaintenance } from './core/automation.js';
 import { testAI } from './core/ai.js';
 import { getDiscoveryRecommendations, inspectDiscoveryRepository, installDiscoveredSkills } from './core/discovery-service.js';
 import { normalizeCommitSha, normalizeRepositorySlug } from './core/repository-security.js';
@@ -441,9 +441,13 @@ export function createRoutes() {
     catch (e) { apiError(res, 400, 'CLASSIFICATION_FAILED', sanitizeError(e.message)); }
   });
   router.get('/automation/status', (req, res) => res.json(getAutomationStatus()));
-  router.post('/automation/run', async (req, res) => {
-    try { res.json(await runMaintenance({ classify: req.body?.classify })); }
+  router.post('/automation/run', (req, res) => {
+    try { res.status(202).json({ run: startMaintenance({ classify: req.body?.classify }) }); }
     catch (e) { apiError(res, 409, 'MAINTENANCE_FAILED', sanitizeError(e.message)); }
+  });
+  router.post('/automation/run/cancel', (req, res) => {
+    try { res.json({ run: cancelMaintenance(req.body?.id) }); }
+    catch (e) { apiError(res, 409, 'MAINTENANCE_CANCEL_FAILED', sanitizeError(e.message)); }
   });
 
   router.get('/app-updates/status', async (req, res) => {

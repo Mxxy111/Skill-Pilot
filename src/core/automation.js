@@ -7,6 +7,16 @@ import { checkAllUpdates, getUpdateSummary, updateTrackedInstall } from './updat
 
 let timer = null;
 let isRunning = false;
+let currentRun = null;
+let currentController = null;
+
+function runSnapshot() {
+  return currentRun ? JSON.parse(JSON.stringify(currentRun)) : null;
+}
+
+function reportProgress(callback, patch) {
+  callback?.({ at: new Date().toISOString(), ...patch });
+}
 
 function nextRunAt(now, intervalHours) {
   return new Date(now.getTime() + Math.max(1, Number(intervalHours) || 24) * 60 * 60 * 1000).toISOString();
@@ -81,9 +91,17 @@ export async function classifySkills(ids = [], options = {}) {
     { force: ids.length > 0 }
   );
   const results = [];
-  for (const skill of selection.items) {
+  reportProgress(options.onProgress, {
+    phase: 'classification',
+    completed: 0,
+    total: selection.items.length,
+    remaining: selection.remaining,
+    message: selection.items.length ? `Preparing ${selection.items.length} skills for AI classification` : 'No skills require classification'
+  });
+  for (const [index, skill] of selection.items.entries()) {
+    options.signal?.throwIfAborted?.();
     try {
-      const classification = await (options.classifyImpl || classifySkill)(skill.classificationInput);
+      const classification = await (options.classifyImpl || classifySkill)(skill.classificationInput, { signal: options.signal });
       (options.updateSkill || ((id, patch) => database.updateSkill(id, patch)))(skill.id, {
         ...classification,
         lastClassifiedAt: new Date().toISOString(),
@@ -91,8 +109,17 @@ export async function classifySkills(ids = [], options = {}) {
       });
       results.push({ id: skill.id, ok: true, classification });
     } catch (error) {
+      if (options.signal?.aborted) throw options.signal.reason || error;
       results.push({ id: skill.id, ok: false, error: error.message });
     }
+    reportProgress(options.onProgress, {
+      phase: 'classification',
+      completed: index + 1,
+      total: selection.items.length,
+      remaining: selection.remaining,
+      current: skill.name,
+      message: `Classified ${index + 1}/${selection.items.length}`
+    });
   }
   const succeeded = results.filter(item => item.ok).length;
   if (options.recordHistory !== false) {
@@ -119,7 +146,9 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
   };
 
   try {
+    reportProgress(options.onProgress, { phase: 'starting', completed: 0, total: 0, message: 'Preparing maintenance' });
     if (settings.automation.updateChecks) {
+      reportProgress(options.onProgress, { phase: 'updates', completed: 0, total: 0, message: 'Checking tracked sources' });
       result.updates = await (options.checkImpl || checkAllUpdates)({ force: true });
       result.failures += Number(result.updates.failed) || 0;
       if (settings.automation.autoUpdate) {
@@ -132,7 +161,11 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
     }
     const shouldClassify = classify ?? settings.automation.classification;
     if (shouldClassify && settings.ai.enabled) {
-      result.classification = await (options.classifyImpl || classifySkills)([], { recordHistory: false });
+      result.classification = await (options.classifyImpl || classifySkills)([], {
+        recordHistory: false,
+        onProgress: options.onProgress,
+        signal: options.signal
+      });
       result.failures += Math.max(0, result.classification.total - result.classification.succeeded);
     }
     result.status = result.failures ? 'partial' : 'success';
@@ -147,6 +180,7 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
       message: result.status === 'success' ? 'Maintenance completed' : `Maintenance completed with ${result.failures} failures`,
       details: result
     });
+    reportProgress(options.onProgress, { phase: 'complete', completed: 1, total: 1, message: 'Maintenance completed' });
     return result;
   } catch (error) {
     result.status = 'error';
@@ -163,6 +197,70 @@ export async function runMaintenance({ classify = null, scheduled = false } = {}
   }
 }
 
+export function startMaintenance(input = {}, options = {}) {
+  if (isRunning || currentRun?.status === 'running') throw new Error('Maintenance is already running.');
+  const id = crypto.randomUUID();
+  const controller = new AbortController();
+  currentController = controller;
+  currentRun = {
+    id,
+    status: 'running',
+    phase: 'queued',
+    completed: 0,
+    total: 0,
+    remaining: 0,
+    current: null,
+    message: 'Maintenance queued',
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    result: null,
+    error: null
+  };
+  const onProgress = progress => {
+    if (currentRun?.id !== id) return;
+    currentRun = { ...currentRun, ...progress };
+  };
+  Promise.resolve()
+    .then(() => runMaintenance(input, { ...options, onProgress, signal: controller.signal }))
+    .then(result => {
+      if (currentRun?.id !== id) return;
+      currentRun = {
+        ...currentRun,
+        status: result.status,
+        phase: 'complete',
+        completed: 1,
+        total: 1,
+        message: result.status === 'success' ? 'Maintenance completed' : 'Maintenance completed with issues',
+        finishedAt: result.finishedAt,
+        result
+      };
+    })
+    .catch(error => {
+      if (currentRun?.id !== id) return;
+      const cancelled = controller.signal.aborted;
+      currentRun = {
+        ...currentRun,
+        status: cancelled ? 'cancelled' : 'error',
+        phase: cancelled ? 'cancelled' : 'error',
+        message: cancelled ? 'Maintenance cancelled' : error.message,
+        error: cancelled ? null : error.message,
+        finishedAt: new Date().toISOString()
+      };
+    })
+    .finally(() => {
+      if (currentController === controller) currentController = null;
+    });
+  return runSnapshot();
+}
+
+export function cancelMaintenance(id) {
+  if (!currentRun || currentRun.status !== 'running' || !currentController) throw new Error('No maintenance run is active.');
+  if (id && id !== currentRun.id) throw new Error('Maintenance run does not match the active task.');
+  currentRun = { ...currentRun, status: 'cancelling', message: 'Stopping after the current operation' };
+  currentController.abort(new Error('Maintenance cancelled.'));
+  return runSnapshot();
+}
+
 export function getAutomationStatus() {
   const data = database.snapshot();
   const automation = data.settings.automation;
@@ -170,6 +268,7 @@ export function getAutomationStatus() {
     isRunning,
     lastScheduledRun: automation.lastRunAt || null,
     nextRunAt: automation.nextRunAt || null,
+    run: runSnapshot(),
     settings: automation,
     updates: getUpdateSummary(),
     history: data.history.slice(0, 30)
@@ -183,7 +282,9 @@ function schedulerTick() {
     database.updateSettings({ automation: normalizeAutomationPatch(automation, { enabled: true }, new Date()) });
     return;
   }
-  if (Date.now() >= new Date(automation.nextRunAt).getTime()) runMaintenance({ scheduled: true }).catch(() => {});
+  if (Date.now() >= new Date(automation.nextRunAt).getTime()) {
+    try { startMaintenance({ scheduled: true }); } catch {}
+  }
 }
 
 export function startAutomationScheduler() {

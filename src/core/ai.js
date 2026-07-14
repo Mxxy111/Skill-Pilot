@@ -125,11 +125,14 @@ export async function callAI(messages, overrides = {}) {
   if (!config.baseUrl || !config.model) throw new Error('AI endpoint and model are required.');
   const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+  const timeoutMs = Math.max(5_000, Math.min(120_000, Number(overrides.timeoutMs) || 60_000));
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = overrides.signal ? AbortSignal.any([overrides.signal, timeoutSignal]) : timeoutSignal;
   const response = await fetch(completionUrl(config.baseUrl), {
     method: 'POST',
     headers,
     body: JSON.stringify({ model: config.model, messages, temperature: 0.1, stream: false }),
-    signal: AbortSignal.timeout(60000)
+    signal
   });
   if (!response.ok) throw new Error(`AI provider returned HTTP ${response.status}.`);
   const data = await response.json();

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeAutomationPatch, runMaintenance } from '../src/core/automation.js';
+import { cancelMaintenance, getAutomationStatus, normalizeAutomationPatch, runMaintenance, startMaintenance } from '../src/core/automation.js';
 
 test('maintenance reports partial status when checks or individual updates fail', async () => {
   let savedSettings = null;
@@ -59,4 +59,50 @@ test('maintenance suppresses the duplicate standalone classification history ent
   assert.equal(classifyArguments[1].recordHistory, false);
   assert.equal(history.length, 1);
   assert.equal(history[0].type, 'maintenance');
+});
+
+test('manual maintenance starts in the background and exposes live progress', async () => {
+  let finishClassification;
+  const classification = new Promise(resolve => { finishClassification = resolve; });
+  const run = startMaintenance({ classify: true }, {
+    settings: {
+      ai: { enabled: true },
+      automation: { enabled: false, intervalHours: 24, updateChecks: false, autoUpdate: false, classification: true }
+    },
+    classifyImpl: async (_ids, options) => {
+      options.onProgress({ phase: 'classification', completed: 1, total: 3, message: 'Classifying 1/3' });
+      return classification;
+    },
+    updateSettings: () => {},
+    addHistory: () => {},
+    now: () => new Date('2026-07-14T00:00:00.000Z')
+  });
+
+  assert.equal(run.status, 'running');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(getAutomationStatus().run.completed, 1);
+  assert.equal(getAutomationStatus().run.total, 3);
+
+  finishClassification({ total: 3, succeeded: 3, remaining: 0, skippedStable: 0, results: [] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(getAutomationStatus().run.status, 'success');
+});
+
+test('running maintenance can be cancelled without leaving the runner locked', async () => {
+  const run = startMaintenance({ classify: true }, {
+    settings: {
+      ai: { enabled: true },
+      automation: { enabled: false, intervalHours: 24, updateChecks: false, autoUpdate: false, classification: true }
+    },
+    classifyImpl: async (_ids, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    }),
+    updateSettings: () => {},
+    addHistory: () => {}
+  });
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancelMaintenance(run.id).status, 'cancelling');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(getAutomationStatus().run.status, 'cancelled');
 });
