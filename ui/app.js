@@ -32,7 +32,7 @@ const api = {
   testAI: data => request('/api/ai/test', jsonOptions('POST', data)),
   runMaintenance: classify => request('/api/automation/run', jsonOptions('POST', { classify })),
   cancelMaintenance: id => request('/api/automation/run/cancel', jsonOptions('POST', { id })),
-  discover: params => request(`/api/discovery/github?${new URLSearchParams(params)}`),
+  discover: params => request(`/api/discovery/catalog?${new URLSearchParams(params)}`),
   inspectRepository: repository => request('/api/discovery/inspections', jsonOptions('POST', { repository, useAI: true })),
   recommendRepositories: (query, repositories) => request('/api/discovery/recommendations', jsonOptions('POST', { query, repositories })),
   installTargets: () => request('/api/skill-installations/targets'),
@@ -55,6 +55,11 @@ function upload(path, file) {
 function formatDate(value) {
   if (!value) return '尚未运行';
   return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+}
+
+function formatCompactNumber(value) {
+  const number = Math.max(0, Number(value) || 0);
+  return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(number);
 }
 
 function extractError(error) {
@@ -97,6 +102,19 @@ function Icon({ name, size = 18 }) {
 }
 
 const AGENT_LABELS = { claude: 'Claude', codex: 'Codex', agents: 'Agents', openclaw: 'OpenClaw', gemini: 'Gemini', cursor: 'Cursor', custom: '自定义' };
+
+const DISCOVERY_VIEWS = [
+  ['popular', '全网热门', '累计安装量最高'],
+  ['trending', '本周趋势', '近期增长最快'],
+  ['hot', '正在升温', '此刻增速明显']
+];
+
+const DISCOVERY_TOPICS = [
+  ['featured', '精选起点'], ['development', '开发与工程'], ['research', '科研与论文'],
+  ['data', '数据与图表'], ['design', '设计与创意'], ['documents', '文档与演示'],
+  ['automation', '自动化与效率'], ['testing', '测试与质量'], ['devops', '部署与运维'],
+  ['security', '安全与审计'], ['marketing', '内容与增长']
+];
 
 function App() {
   const [page, setPage] = useState('dashboard');
@@ -177,8 +195,8 @@ function App() {
     setBusy(true);
     try {
       const result = await task();
-      if (success) setToast(typeof success === 'function' ? success(result) : success);
       await refresh();
+      if (success) setToast(typeof success === 'function' ? success(result) : success);
       return result;
     } catch (error) { setToast(extractError(error)); }
     finally { setBusy(false); }
@@ -320,7 +338,7 @@ function Library({ skills, search, selected, setSelected, onOpen, onBulk, onExpo
 function Discover({ settings, busy, onToast, onInstall }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
-  const [sort, setSort] = useState('popular');
+  const [view, setView] = useState('popular');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [inspecting, setInspecting] = useState('');
@@ -331,21 +349,32 @@ function Discover({ settings, busy, onToast, onInstall }) {
   const [acknowledgeRisk, setAcknowledgeRisk] = useState(false);
   const [recommendations, setRecommendations] = useState(new Map());
   const [recommending, setRecommending] = useState(false);
-  async function search() {
+  async function search(overrides = {}) {
+    const requestState = {
+      search: overrides.search ?? query,
+      category: overrides.category ?? category,
+      view: overrides.view ?? view,
+      limit: 24
+    };
     setLoading(true);
     try {
-      setData(await api.discover({ search: query, category, sort, page: 1 }));
+      setData(await api.discover(requestState));
       setRecommendations(new Map());
     }
     catch (error) { onToast(extractError(error)); }
     finally { setLoading(false); }
   }
   async function inspect(repo) {
-    setInspecting(repo.name);
+    setInspecting(repo.repository);
     try {
-      const result = await api.inspectRepository(repo.name);
+      const result = await api.inspectRepository(repo.repository);
       setInspection(result);
-      setSelectedPaths(new Set(result.scan.skills.map(skill => skill.path)));
+      const requestedSkill = String(repo.skillName || '').toLowerCase();
+      const exactMatches = result.scan.skills.filter(skill => {
+        const pathName = String(skill.path || '').split('/').at(-1)?.toLowerCase();
+        return String(skill.name || '').toLowerCase() === requestedSkill || pathName === requestedSkill;
+      });
+      setSelectedPaths(new Set((exactMatches.length ? exactMatches : result.scan.skills).map(skill => skill.path)));
       setAcknowledgeRisk(false);
       const preferred = result.ai?.assessment?.recommendedAgents?.find(id => targets.some(target => target.id === id));
       setTargetAgent(preferred || targets[0]?.id || 'codex');
@@ -356,12 +385,20 @@ function Discover({ settings, busy, onToast, onInstall }) {
     if (!data?.items?.length) return;
     setRecommending(true);
     try {
-      const result = await api.recommendRepositories(query || category || '优质、实用的 Agent Skills', data.items.slice(0, 8).map(repo => ({
-        repository: repo.name,
-        description: repo.description,
-        stars: repo.stars,
-        topics: repo.topics
-      })));
+      const candidates = [];
+      const repositories = new Set();
+      for (const skill of data.items) {
+        if (repositories.has(skill.repository)) continue;
+        repositories.add(skill.repository);
+        candidates.push({
+          repository: skill.repository,
+          description: `${skill.skillName} · ${skill.installs || skill.stars || 0} 次生态采用`,
+          stars: skill.installs || skill.stars || 0,
+          topics: category ? [category] : []
+        });
+        if (candidates.length === 8) break;
+      }
+      const result = await api.recommendRepositories(query || DISCOVERY_TOPICS.find(item => item[0] === category)?.[1] || '优质、实用的 Agent Skills', candidates);
       setRecommendations(new Map(result.recommendations.map(item => [item.repository.toLowerCase(), item])));
       onToast(`AI 已评估 ${result.recommendations.length} 个候选仓库`);
     } catch (error) { onToast(extractError(error)); }
@@ -384,12 +421,30 @@ function Discover({ settings, busy, onToast, onInstall }) {
     });
     if (result) setInspection(null);
   }
-  useEffect(() => { search(); }, [sort]);
+  function selectView(nextView) {
+    setView(nextView);
+    setCategory('');
+    setQuery('');
+    search({ view: nextView, category: '', search: '' });
+  }
+  function selectTopic(nextCategory) {
+    setCategory(nextCategory);
+    setQuery('');
+    search({ category: nextCategory, search: '' });
+  }
+  useEffect(() => { search({ search: '', category: '', view: 'popular' }); }, []);
   useEffect(() => { api.installTargets().then(result => setTargets(result.targets || [])).catch(error => onToast(extractError(error))); }, []);
-  return html`<section class="page discover-page"><${PageHeading} eyebrow="GITHUB DISCOVERY" title="发现、检查并安装 Skills" description="搜索 GitHub 项目，固定 commit 后执行静态风险扫描；配置 AI 后还可获得语义判断和个性化推荐。" actions=${settings?.ai?.enabled ? html`<button class="secondary-button" onClick=${recommend} disabled=${recommending || loading || !data?.items?.length}>${recommending ? 'AI 评估中…' : 'AI 智能推荐'}</button>` : html`<button class="secondary-button" onClick=${() => onToast('请先在设置中启用并测试 AI 服务')}>启用 AI 推荐</button>`} />
-    <form class="discovery-search" onSubmit=${event => { event.preventDefault(); search(); }}><label><span>⌕</span><input value=${query} onInput=${event => setQuery(event.target.value)} placeholder="例如：医学研究、数据分析、前端设计" aria-label="搜索 GitHub Skills" /></label><select value=${category} onChange=${event => setCategory(event.target.value)}><option value="">全部领域</option><option value="development">开发</option><option value="science">科研</option><option value="data">数据</option><option value="design">设计</option><option value="productivity">效率</option><option value="security">安全</option><option value="writing">写作</option></select><button class="primary-button">搜索</button></form>
-    <div class="discover-toolbar"><div class="segmented"><button class=${sort === 'popular' ? 'active' : ''} onClick=${() => setSort('popular')}>热门优先</button><button class=${sort === 'latest' ? 'active' : ''} onClick=${() => setSort('latest')}>最近更新</button></div><span>${data ? `约 ${data.total} 个相关仓库` : ''}</span></div>
-    ${loading ? html`<${LoadingState} />` : data?.items?.length ? html`<div class="repo-grid">${data.items.map(repo => { const recommendation = recommendations.get(repo.name.toLowerCase()); return html`<article class=${recommendation ? 'repo-card recommended' : 'repo-card'} key=${repo.id}><div class="repo-owner"><img src=${repo.avatarUrl} alt="" /><span>${repo.owner}</span><span class="repo-license">${repo.license || 'NO LICENSE'}</span></div>${recommendation && html`<div class="recommendation-note"><strong>AI ${recommendation.score} 分</strong><span>${recommendation.reason}</span></div>`}<h2>${repo.name.split('/')[1]}</h2><p>${repo.description || '该仓库没有提供描述。'}</p><div class="repo-topics">${repo.topics.slice(0, 4).map(topic => html`<span>${topic}</span>`)}</div><div class="repo-footer"><span>★ ${repo.stars.toLocaleString()}</span><span>⑂ ${repo.forks.toLocaleString()}</span><time>${formatDate(repo.updatedAt)}</time><div class="repo-actions"><a href=${repo.url} target="_blank" rel="noopener noreferrer">GitHub ↗</a><button class="primary-button compact" onClick=${() => inspect(repo)} disabled=${Boolean(inspecting) || busy}>${inspecting === repo.name ? '正在检查…' : '检查并安装'}</button></div></div></article>`; })}</div>` : html`<${EmptyState} title="未找到匹配项目" text="尝试更宽泛的关键词，或切换到热门排序。" />`}
+  const currentView = DISCOVERY_VIEWS.find(item => item[0] === view) || DISCOVERY_VIEWS[0];
+  const currentTopic = DISCOVERY_TOPICS.find(item => item[0] === category);
+  const hasAppliedSearch = Boolean(data?.query);
+  return html`<section class="page discover-page"><${PageHeading} title="不知道搜什么，也能找到好 Skills" description="先浏览真实安装量与增长趋势；有明确任务时，直接描述你想完成什么，不必猜仓库名或英文关键词。" actions=${settings?.ai?.enabled ? html`<button class="secondary-button" onClick=${recommend} disabled=${recommending || loading || !data?.items?.length}>${recommending ? 'AI 挑选中…' : 'AI 帮我从本页挑选'}</button>` : null} />
+    <section class="discovery-principles" aria-label="发现依据"><div><span>01</span><strong>按单个 Skill 排名</strong><small>不再把整个仓库当成一个结果</small></div><div><span>02</span><strong>真实生态安装量</strong><small>热门来自采用，而不是名称碰巧命中</small></div><div><span>03</span><strong>安装前仍会安全复检</strong><small>固定 commit、静态扫描、风险确认</small></div></section>
+    <form class="discovery-search catalog-search" onSubmit=${event => { event.preventDefault(); setCategory(''); search({ category: '' }); }}><label><${Icon} name="search" size=${18} /><input value=${query} onInput=${event => setQuery(event.target.value)} placeholder="描述任务，例如：帮我制作一份医学研究汇报" aria-label="按任务寻找 Skills" /></label><button class="primary-button">按任务寻找</button></form>
+    <nav class="topic-rail" aria-label="Skills 主题">${DISCOVERY_TOPICS.map(([id, label]) => html`<button class=${category === id ? 'active' : ''} type="button" onClick=${() => selectTopic(id)} aria-pressed=${category === id}>${label}</button>`)}</nav>
+    <div class="discover-toolbar catalog-toolbar"><div class="segmented" aria-label="榜单类型">${DISCOVERY_VIEWS.map(([id, label]) => html`<button class=${!category && !hasAppliedSearch && view === id ? 'active' : ''} type="button" onClick=${() => selectView(id)} aria-pressed=${!category && !hasAppliedSearch && view === id}>${label}</button>`)}</div><div class="catalog-result-label"><strong>${currentTopic ? currentTopic[1] : hasAppliedSearch ? '任务匹配' : currentView[1]}</strong><span>${data?.source === 'github-fallback' ? 'GitHub 降级结果' : data?.searchType === 'blended' ? '多路意图聚合 · skills.sh' : data?.searchType === 'semantic' ? '语义检索 · skills.sh' : data?.source ? 'skills.sh 生态索引' : ''}</span></div></div>
+    ${data?.resolvedQuery && hasAppliedSearch && data.resolvedQuery.toLowerCase() !== data.query.toLowerCase() && html`<div class="intent-translation"><span>已理解你的任务</span><code>${data.resolvedQuery}</code></div>`}
+    ${data?.warning && html`<div class="catalog-warning"><strong>生态榜单暂时不可用，已自动降级</strong><span>当前显示 GitHub 仓库结果；恢复后会自动回到单 Skill 安装榜。</span></div>`}
+    ${loading ? html`<div class="catalog-skeleton" aria-busy="true" aria-label="正在载入 Skills 榜单">${[1, 2, 3, 4, 5, 6].map(item => html`<i key=${item}></i>`)}</div>` : data?.items?.length ? html`<div class="skill-catalog-grid">${data.items.map(skill => { const recommendation = recommendations.get(skill.repository.toLowerCase()); const metric = data.source === 'github-fallback' ? skill.stars : skill.installs; return html`<article class=${recommendation ? 'catalog-skill-card recommended' : 'catalog-skill-card'} key=${skill.id}><header><span class="catalog-rank">#${String(skill.rank || 0).padStart(2, '0')}</span><span class=${skill.change > 0 ? 'catalog-trend rising' : 'catalog-trend'}>${skill.change > 0 ? `↑ ${formatCompactNumber(skill.change)}` : skill.view === 'trending' ? '本周趋势' : skill.view === 'hot' ? '正在升温' : '生态精选'}</span></header><div class="catalog-skill-title"><h2>${skill.skillName}</h2><p>${skill.repository}</p></div>${recommendation && html`<div class="recommendation-note"><strong>AI ${recommendation.score} 分</strong><span>${recommendation.reason}</span></div>`}<div class="catalog-metric"><strong>${formatCompactNumber(metric)}</strong><span>${data.source === 'github-fallback' ? 'GitHub Stars' : '生态安装'}</span></div>${skill.description && html`<p class="catalog-description">${skill.description}</p>`}<footer><a href=${skill.url} target="_blank" rel="noopener noreferrer">查看来源 ↗</a><button class="primary-button compact" onClick=${() => inspect(skill)} disabled=${Boolean(inspecting) || busy}>${inspecting === skill.repository ? '正在检查…' : '检查并安装'}</button></footer></article>`; })}</div>` : html`<${EmptyState} title="还没有找到合适的 Skill" text="试着描述最终想完成的任务，或直接从上方主题开始浏览。" />`}
     ${inspection && html`<${RepositoryInspectionDialog} inspection=${inspection} targets=${targets} targetAgent=${targetAgent} setTargetAgent=${setTargetAgent} selectedPaths=${selectedPaths} toggleSkill=${toggleSkill} acknowledgeRisk=${acknowledgeRisk} setAcknowledgeRisk=${setAcknowledgeRisk} busy=${busy} onInstall=${install} onClose=${() => setInspection(null)} />`}
   </section>`;
 }

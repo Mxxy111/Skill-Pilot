@@ -30,9 +30,9 @@ try {
     return route.fulfill({ status: 202, json: { run: maintenanceRun } });
   });
   await electronApp.context().route('**/api/app-updates/status**', route => route.fulfill({ json: {
-    status: 'update-available', currentVersion: '0.7.0', latestVersion: '0.7.1', updateAvailable: true,
+    status: 'update-available', currentVersion: '0.8.0', latestVersion: '0.8.1', updateAvailable: true,
     checkedAt: '2026-07-13T12:00:00.000Z',
-    release: { name: 'SkillPilot 0.7.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.7.1', publishedAt: '2026-07-14T12:00:00.000Z', notes: 'Stable update', assets: [] }
+    release: { name: 'SkillPilot 0.8.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.8.1', publishedAt: '2026-07-14T12:00:00.000Z', notes: 'Stable update', assets: [] }
   } }));
   const window = await electronApp.firstWindow();
   const consoleErrors = [];
@@ -64,9 +64,14 @@ try {
   mkdirSync(screenshotDir, { recursive: true });
   await window.screenshot({ path: join(screenshotDir, 'desktop-dashboard.png'), fullPage: true });
 
-  await window.route('**/api/discovery/github**', route => route.fulfill({ json: {
-    items: [{ id: 1, name: 'owner/writer-skills', url: 'https://github.com/owner/writer-skills', description: 'Writing skills', stars: 120, forks: 8, updatedAt: '2026-07-01T00:00:00.000Z', pushedAt: '2026-07-01T00:00:00.000Z', topics: ['writing'], license: 'MIT', owner: 'owner', avatarUrl: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=' }],
-    total: 1, page: 1, pageSize: 24, hasNextPage: false
+  await window.route('**/api/discovery/catalog**', route => route.fulfill({ json: {
+    source: 'skills.sh-leaderboard', view: 'popular', query: '', resolvedQuery: '', searchType: null,
+    items: [
+      ['editorial-writing', 'owner/writer-skills', 128400], ['frontend-design', 'anthropics/skills', 98400],
+      ['browser-automation', 'vercel-labs/skills', 76200], ['academic-research', 'research/agent-skills', 41800],
+      ['data-visualization', 'analytics/skills', 27300], ['security-review', 'trusted/skills', 15900]
+    ].map(([skillName, repository, installs], index) => ({ id: `${repository}/${skillName}`, skillName, repository, installs, change: 0, rank: index + 1, url: `https://skills.sh/${repository}/${skillName}`, source: 'skills.sh', view: 'popular' })),
+    total: 6
   } }));
   await window.route('**/api/skill-installations/targets', route => route.fulfill({ json: { targets: [{ id: 'codex', name: 'OpenAI Codex', agent: 'codex' }] } }));
   await window.route('**/api/discovery/inspections', route => route.fulfill({ json: {
@@ -78,9 +83,11 @@ try {
   await window.route('**/api/skill-installations', route => route.fulfill({ status: 201, json: { ok: true, repository: 'owner/writer-skills', commitSha: 'a'.repeat(40), target: { id: 'codex', name: 'OpenAI Codex' }, installed: [{ name: 'writer', path: 'test', sourcePath: 'skills/writer', fileCount: 2 }], risk: { level: 'low', findings: [] } } }));
 
   await window.locator('.nav-item').filter({ hasText: '发现' }).click();
-  await window.getByRole('heading', { name: '发现、检查并安装 Skills' }).waitFor();
-  await window.getByRole('button', { name: /AI 智能推荐|启用 AI 推荐/ }).waitFor();
-  await window.getByRole('button', { name: '检查并安装' }).click();
+  await window.getByRole('heading', { name: '不知道搜什么，也能找到好 Skills' }).waitFor();
+  await window.getByText('12.8万').waitFor();
+  await window.waitForTimeout(400);
+  await window.screenshot({ path: join(screenshotDir, 'desktop-discovery-catalog.png'), fullPage: true });
+  await window.getByRole('button', { name: '检查并安装' }).first().click();
   await window.getByRole('dialog').waitFor();
   await window.getByText('AI 判断为有效 Skills 仓库').waitFor();
   await window.screenshot({ path: join(screenshotDir, 'desktop-discovery-inspection.png'), fullPage: true });
@@ -98,9 +105,9 @@ try {
 
   await window.locator('.nav-item').filter({ hasText: '设置' }).click();
   await window.getByRole('heading', { name: '应用更新' }).waitFor();
-  await window.locator('.update-state').filter({ hasText: '发现新版本 0.7.1' }).waitFor();
+  await window.locator('.update-state').filter({ hasText: '发现新版本 0.8.1' }).waitFor();
   await window.getByRole('button', { name: '立即检查更新' }).click();
-  await window.getByRole('status').filter({ hasText: '发现新版本 0.7.1' }).waitFor();
+  await window.getByRole('status').filter({ hasText: '发现新版本 0.8.1' }).waitFor();
   const horizontalLayout = await window.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
     documentWidth: document.documentElement.scrollWidth,
