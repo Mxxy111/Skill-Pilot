@@ -22,8 +22,8 @@
 
 普通用户可直接运行 `release` 目录中的 Windows 安装包或便携版，无需安装 Node.js，也不会打开浏览器：
 
-- `SkillPilot-Setup-0.6.1-x64.exe`：安装版，有安装向导、桌面/开始菜单快捷方式和标准卸载入口
-- `SkillPilot-Portable-0.6.1-x64.exe`：免安装版，单文件双击运行，不写入程序安装目录或创建卸载项
+- `SkillPilot-Setup-0.7.0-x64.exe`：安装版，有安装向导、桌面/开始菜单快捷方式和标准卸载入口
+- `SkillPilot-Portable-0.7.0-x64.exe`：免安装版，单文件双击运行，不写入程序安装目录或创建卸载项
 
 两种版本的功能和用户数据完全相同，并共用 `%USERPROFILE%\.skillpilot\`。免安装版的“便携”仅指程序本体无需安装，并不表示数据跟随 EXE 移动。
 

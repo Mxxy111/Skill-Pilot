@@ -74,12 +74,27 @@ function maintenanceMessage(result) {
 }
 
 const NAV = [
-  ['dashboard', '总览', '01'],
-  ['library', 'Skills 库', '02'],
-  ['discover', '发现', '03'],
-  ['automation', '自动维护', '04'],
-  ['settings', '设置', '05']
+  ['dashboard', '总览', 'dashboard'],
+  ['library', 'Skills 库', 'library'],
+  ['discover', '发现', 'discover'],
+  ['automation', '自动维护', 'automation'],
+  ['settings', '设置', 'settings']
 ];
+
+const ICON_PATHS = {
+  dashboard: ['M4 4h6v6H4z', 'M14 4h6v4h-6z', 'M14 12h6v8h-6z', 'M4 14h6v6H4z'],
+  library: ['M5 4.5h11.5A2.5 2.5 0 0 1 19 7v12.5H7.5A2.5 2.5 0 0 1 5 17z', 'M5 17a2 2 0 0 1 2-2h12'],
+  discover: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'm15 9-2 4-4 2 2-4z'],
+  automation: ['M20 12a8 8 0 0 1-13.7 5.6L4 20v-6h6l-2.2 2.2A6 6 0 0 0 18 12', 'M4 12A8 8 0 0 1 17.7 6.4L20 4v6h-6l2.2-2.2A6 6 0 0 0 6 12'],
+  settings: ['M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z', 'M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-1.9.3l-.8.5a1.7 1.7 0 0 0-.9 1.6v.2h-4v-.2a1.7 1.7 0 0 0-.9-1.6l-.8-.5a1.7 1.7 0 0 0-1.9-.3l-.2.1-2-3.4.1-.1a1.7 1.7 0 0 0 .3-1.9l-.4-.9a1.7 1.7 0 0 0-1.4-1.1h-.2V9h.2a1.7 1.7 0 0 0 1.4-1.1l.4-.9a1.7 1.7 0 0 0-.3-1.9L4.2 5l2-3.4.2.1a1.7 1.7 0 0 0 1.9-.3l.8-.5A1.7 1.7 0 0 0 10 .1V0h4v.2a1.7 1.7 0 0 0 .9 1.6l.8.5a1.7 1.7 0 0 0 1.9.3l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9l.4.9A1.7 1.7 0 0 0 21.2 9h.2v4h-.2a1.7 1.7 0 0 0-1.4 1.1z'],
+  search: ['m21 21-4.35-4.35', 'M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z'],
+  refresh: ['M20 11a8 8 0 1 0-2.3 5.7', 'M20 4v7h-7'],
+  plus: ['M12 5v14', 'M5 12h14']
+};
+
+function Icon({ name, size = 18 }) {
+  return html`<svg class="ui-icon" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${(ICON_PATHS[name] || []).map(path => html`<path d=${path}></path>`)}</svg>`;
+}
 
 const AGENT_LABELS = { claude: 'Claude', codex: 'Codex', agents: 'Agents', openclaw: 'OpenClaw', gemini: 'Gemini', cursor: 'Cursor', custom: '自定义' };
 
@@ -194,16 +209,16 @@ function App() {
           <span><strong>SkillPilot</strong><small>LOCAL OPS</small></span>
         </button>
         <nav class="main-nav" aria-label="主导航">
-          ${NAV.map(([id, label, index]) => html`
+          ${NAV.map(([id, label, icon]) => html`
             <button class=${page === id ? 'nav-item active' : 'nav-item'} onClick=${() => navigate(id)} key=${id}>
-              <span class="nav-index">${index}</span><span>${label}</span>
+              <span class="nav-icon"><${Icon} name=${icon} /></span><span>${label}</span>
               ${id === 'library' && html`<span class="nav-count">${skills.length}</span>`}
             </button>
           `)}
         </nav>
         <div class="sidebar-status">
           <span class=${automation?.settings?.enabled ? 'status-light online' : 'status-light'}></span>
-          <div><strong>${automation?.settings?.enabled ? '自动维护已启用' : '本地模式'}</strong><small>数据仅保存在此设备</small></div>
+          <div><strong>${['running', 'cancelling'].includes(automation?.run?.status) ? '维护任务运行中' : automation?.settings?.enabled ? '自动维护已启用' : '本地模式'}</strong><small>${automation?.run?.status === 'running' ? automation.run.message : '数据仅保存在此设备'}</small></div>
         </div>
       </aside>
 
@@ -211,14 +226,14 @@ function App() {
         <header class="topbar">
           <div class="mobile-brand"><span class="brand-mark">S</span><strong>SkillPilot</strong></div>
           <label class="global-search">
-            <span aria-hidden="true">⌕</span>
+            <${Icon} name="search" size=${16} />
             <input value=${globalSearch} onInput=${event => setGlobalSearch(event.target.value)} onFocus=${() => page !== 'library' && navigate('library')} placeholder="搜索名称、分类、标签或来源" aria-label="全局搜索" />
             <kbd>⌘ K</kbd>
           </label>
           <div class="top-actions">
             ${appUpdate?.updateAvailable && html`<button class="update-chip" onClick=${() => navigate('settings')}>↑ v${appUpdate.latestVersion}</button>`}
-            <button class="icon-button" onClick=${() => refresh().then(() => setToast('索引已刷新'))} aria-label="刷新索引">↻</button>
-            <button class="primary-button compact" onClick=${() => document.getElementById('skill-import').click()}>导入 Skill</button>
+            <button class="icon-button" onClick=${() => refresh().then(() => setToast('索引已刷新'))} aria-label="刷新索引"><${Icon} name="refresh" /></button>
+            <button class="primary-button compact" onClick=${() => document.getElementById('skill-import').click()}><${Icon} name="plus" size=${15} />导入 Skill</button>
             <input id="skill-import" class="visually-hidden" type="file" accept=".zip" onChange=${event => event.target.files[0] && run(() => api.importSkill(event.target.files[0]), 'Skill 导入成功')} />
           </div>
         </header>
@@ -242,8 +257,8 @@ function LoadingState() {
   return html`<div class="loading-state" aria-busy="true"><span></span><span></span><span></span><p>正在建立本地 Skills 索引…</p></div>`;
 }
 
-function PageHeading({ eyebrow, title, description, actions }) {
-  return html`<div class="page-heading"><div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="page-description">${description}</p></div><div class="heading-actions">${actions}</div></div>`;
+function PageHeading({ title, description, actions }) {
+  return html`<header class="page-heading"><div><h1>${title}</h1><p class="page-description">${description}</p></div><div class="heading-actions">${actions}</div></header>`;
 }
 
 function Dashboard({ data, automation, onNavigate, onRun, busy }) {
@@ -406,7 +421,7 @@ function MaintenanceRun({ run, onCancel }) {
   }[run.phase] || '处理中';
   return html`<article class=${active ? 'maintenance-progress active' : `maintenance-progress ${run.status}`} aria-live="polite">
     <div class="maintenance-progress-head"><div class="run-glyph" aria-hidden="true"><i></i><i></i><i></i></div><div><span>${phase}</span><h2>${run.message || '正在维护 Skills'}</h2><p>${run.current ? `当前：${run.current}` : active ? '任务在后台运行，你可以继续浏览和管理 Skills。' : formatDate(run.finishedAt)}</p></div>${active && html`<button class="secondary-button compact" onClick=${onCancel} disabled=${run.status === 'cancelling'}>${run.status === 'cancelling' ? '正在停止…' : '停止任务'}</button>`}</div>
-    <div class="progress-track" role="progressbar" aria-label="维护进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${progress}><i style=${`transform: scaleX(${run.total ? Math.max(.025, run.completed / run.total) : .025})`}></i></div>
+    <progress class="progress-track" aria-label="维护进度" max="100" value=${run.total ? Math.max(2.5, progress) : 2.5}>${progress}%</progress>
     <div class="progress-meta"><span>${run.total ? `${run.completed} / ${run.total}` : '正在计算工作量'}</span><span>${run.remaining ? `本批完成后仍有 ${run.remaining} 项` : active ? '保持应用开启即可' : run.status}</span></div>
   </article>`;
 }
