@@ -64,6 +64,28 @@ test('schema v1 migration clears legacy classification and introduces empty grou
   assert.equal(migrated.settings.automation.classificationBatchSize, undefined);
 });
 
+test('schema v2 migration preserves custom groups and removes classification audit payloads', () => {
+  const migrated = validateBackup({
+    schemaVersion: 2,
+    skills: { 'codex:writer': { groupId: 'g1', category: 'Writing' } },
+    groups: [{ id: 'g1', name: 'Work' }],
+    customSources: [],
+    settings: {},
+    history: [
+      { id: 'classify', type: 'classify', details: { category: 'Writing' } },
+      { id: 'maintenance', type: 'maintenance', details: { updates: { checked: 1 }, classification: { results: [{ category: 'Writing' }] } } },
+      { id: 'delete', type: 'delete', details: { count: 1 } }
+    ]
+  });
+
+  assert.equal(migrated.groups[0].name, 'Work');
+  assert.equal(migrated.skills['codex:writer'].groupId, 'g1');
+  assert.equal(migrated.skills['codex:writer'].category, undefined);
+  assert.deepEqual(migrated.history.map(entry => entry.id), ['maintenance', 'delete']);
+  assert.equal(migrated.history[0].details.classification, undefined);
+  assert.equal(migrated.history[0].details.updates.checked, 1);
+});
+
 test('opening a schema v1 database safely persists the migration on Windows', () => {
   const dir = mkdtempSync(join(tmpdir(), 'skillpilot-migration-'));
   const file = join(dir, 'database.json');

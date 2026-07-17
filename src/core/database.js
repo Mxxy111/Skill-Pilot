@@ -3,7 +3,7 @@ import { dirname } from 'path';
 import { randomUUID } from 'node:crypto';
 import { DATABASE_FILE } from './paths.js';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const DEFAULT_DATA = Object.freeze({
   schemaVersion: SCHEMA_VERSION,
@@ -53,17 +53,17 @@ function mergeSettings(saved = {}) {
 }
 
 export function validateBackup(input) {
-  if (!input || typeof input !== 'object' || ![1, SCHEMA_VERSION].includes(input.schemaVersion)) {
-    throw new Error(`Unsupported database schema. Expected schema 1 or ${SCHEMA_VERSION}.`);
+  if (!input || typeof input !== 'object' || ![1, 2, SCHEMA_VERSION].includes(input.schemaVersion)) {
+    throw new Error(`Unsupported database schema. Expected schema 1, 2, or ${SCHEMA_VERSION}.`);
   }
   if (!input.skills || Array.isArray(input.skills) || typeof input.skills !== 'object') {
     throw new Error('Invalid skills database.');
   }
   if (!Array.isArray(input.customSources || [])) throw new Error('Invalid custom sources database.');
   if (!Array.isArray(input.history || [])) throw new Error('Invalid history database.');
-  if (input.schemaVersion === SCHEMA_VERSION && !Array.isArray(input.groups || [])) throw new Error('Invalid groups database.');
+  if (input.schemaVersion >= 2 && !Array.isArray(input.groups || [])) throw new Error('Invalid groups database.');
   const skills = clone(input.skills);
-  if (input.schemaVersion === 1) {
+  if (input.schemaVersion < SCHEMA_VERSION) {
     for (const metadata of Object.values(skills)) {
       delete metadata.category;
       delete metadata.subcategory;
@@ -71,13 +71,21 @@ export function validateBackup(input) {
       metadata.lastClassificationFingerprint = null;
     }
   }
+  const history = clone(input.history || [])
+    .filter(entry => input.schemaVersion >= SCHEMA_VERSION || entry.type !== 'classify')
+    .map(entry => {
+      if (input.schemaVersion < SCHEMA_VERSION && entry.type === 'maintenance' && entry.details?.classification) {
+        delete entry.details.classification;
+      }
+      return entry;
+    });
   return {
     schemaVersion: SCHEMA_VERSION,
     skills,
-    groups: clone(input.schemaVersion === SCHEMA_VERSION ? (input.groups || []) : []),
+    groups: clone(input.schemaVersion >= 2 ? (input.groups || []) : []),
     customSources: clone(input.customSources || []),
     settings: mergeSettings(input.settings),
-    history: clone(input.history || []).slice(0, 200)
+    history: history.slice(0, 200)
   };
 }
 

@@ -17,7 +17,7 @@ SkillPilot must maintain every enabled local Skill by default without freezing t
 
 ## Data and API
 
-- Database schema v2 adds `groups` and `groupId` metadata.
+- Database schema v3 adds `groups` and `groupId` metadata and removes legacy classification audit payloads.
 - `GET/POST /api/groups`, `PATCH/DELETE /api/groups/:id`, and `POST /api/groups/:id/status` provide group management.
 - Bulk action `group` assigns selected Skills to a group; `groupId: null` removes the assignment.
 - Automation settings replace `classificationBatchSize` with `classificationConcurrency`.
