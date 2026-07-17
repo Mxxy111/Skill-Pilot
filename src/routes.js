@@ -406,7 +406,8 @@ export function createRoutes() {
   });
   router.post('/groups/:id/status', (req, res) => {
     try {
-      const result = setGroupEnabled(req.params.id, Boolean(req.body?.enabled));
+      if (typeof req.body?.enabled !== 'boolean') throw new Error('Group status requires a boolean enabled value.');
+      const result = setGroupEnabled(req.params.id, req.body.enabled);
       res.status(result.failed ? 207 : 200).json(result);
     } catch (e) { apiError(res, 400, 'GROUP_STATUS_FAILED', sanitizeError(e.message)); }
   });
@@ -414,7 +415,7 @@ export function createRoutes() {
   router.post('/skills/bulk/export', (req, res) => {
     try {
       const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
-      if (!ids.length || ids.length > 200) return apiError(res, 400, 'INVALID_SELECTION', 'Select between 1 and 200 skills.');
+      if (!ids.length || ids.length > 500) return apiError(res, 400, 'INVALID_SELECTION', 'Select between 1 and 500 skills.');
       const outPath = exportSkills(ids);
       res.download(outPath, 'skillpilot-skills.zip', () => { try { unlinkSync(outPath); } catch {} });
     } catch (e) { apiError(res, 400, 'EXPORT_FAILED', sanitizeError(e.message)); }

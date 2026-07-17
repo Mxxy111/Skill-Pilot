@@ -12,7 +12,7 @@ import { startServer } from './server.js';
 program
   .name('skillpilot')
   .description('Local operations center for AI Agent Skills')
-  .version('0.8.0');
+  .version('0.9.0');
 
 // --- list ---
 program

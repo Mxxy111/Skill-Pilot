@@ -22,11 +22,16 @@ const api = {
   settings: () => request('/api/settings'),
   sources: () => request('/api/sources'),
   automation: () => request('/api/automation/status'),
+  groups: () => request('/api/groups'),
   saveSettings: data => request('/api/settings', jsonOptions('PUT', data)),
   updateSource: (id, data) => request(`/api/sources/${encodeURIComponent(id)}`, jsonOptions('PATCH', data)),
   addSource: data => request('/api/sources', jsonOptions('POST', data)),
   removeSource: id => request(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   bulk: data => request('/api/skills/bulk', jsonOptions('POST', data)),
+  createGroup: name => request('/api/groups', jsonOptions('POST', { name })),
+  renameGroup: (id, name) => request(`/api/groups/${encodeURIComponent(id)}`, jsonOptions('PATCH', { name })),
+  deleteGroup: id => request(`/api/groups/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setGroupStatus: (id, enabled) => request(`/api/groups/${encodeURIComponent(id)}/status`, jsonOptions('POST', { enabled })),
   saveSkill: (id, raw) => request(`/api/skills/${encodeURIComponent(id)}`, jsonOptions('PUT', { raw })),
   classify: ids => request('/api/ai/classify', jsonOptions('POST', { ids })),
   testAI: data => request('/api/ai/test', jsonOptions('POST', data)),
@@ -72,8 +77,8 @@ function maintenanceMessage(result) {
   if (result.updates) parts.push(`检查 ${result.updates.checked}/${result.updates.eligible || 0} 个可追踪来源`);
   if (result.appliedUpdates?.length) parts.push(`更新 ${result.appliedUpdates.filter(item => item.ok).length} 项`);
   if (result.classification) parts.push(result.classification.total
-    ? `分类 ${result.classification.succeeded} 项，剩余 ${result.classification.remaining}`
-    : `分类无需更新，保留 ${result.classification.skippedStable || 0} 项`);
+    ? `AI 维护 ${result.classification.succeeded}/${result.classification.total} 项`
+    : '没有可执行 AI 维护的已启用 Skills');
   if (result.failures) parts.push(`${result.failures} 个问题待处理`);
   return parts.join(' · ') || '维护完成：当前没有可跟踪任务';
 }
@@ -123,6 +128,7 @@ function App() {
   const [settings, setSettings] = useState(null);
   const [sources, setSources] = useState([]);
   const [automation, setAutomation] = useState(null);
+  const [groupData, setGroupData] = useState({ groups: [], ungrouped: { count: 0, enabled: 0, disabled: 0 } });
   const [selected, setSelected] = useState(new Set());
   const [detail, setDetail] = useState(null);
   const [toast, setToast] = useState('');
@@ -133,14 +139,15 @@ function App() {
   const reportedRun = useRef(null);
 
   async function refresh() {
-    const [skillData, dashData, settingData, sourceData, automationData] = await Promise.all([
-      api.skills(), api.dashboard(), api.settings(), api.sources(), api.automation()
+    const [skillData, dashData, settingData, sourceData, automationData, groups] = await Promise.all([
+      api.skills(), api.dashboard(), api.settings(), api.sources(), api.automation(), api.groups()
     ]);
     setSkills(skillData);
     setDashboard(dashData);
     setSettings(settingData);
     setSources(sourceData.sources || []);
     setAutomation(automationData);
+    setGroupData(groups);
   }
 
   async function checkAppUpdate(force = false) {
@@ -245,7 +252,7 @@ function App() {
           <div class="mobile-brand"><span class="brand-mark">S</span><strong>SkillPilot</strong></div>
           <label class="global-search">
             <${Icon} name="search" size=${16} />
-            <input value=${globalSearch} onInput=${event => setGlobalSearch(event.target.value)} onFocus=${() => page !== 'library' && navigate('library')} placeholder="搜索名称、分类、标签或来源" aria-label="全局搜索" />
+            <input value=${globalSearch} onInput=${event => setGlobalSearch(event.target.value)} onFocus=${() => page !== 'library' && navigate('library')} placeholder="搜索名称、标签、分组或来源" aria-label="全局搜索" />
             <kbd>⌘ K</kbd>
           </label>
           <div class="top-actions">
@@ -257,15 +264,15 @@ function App() {
         </header>
 
         <div class="page-stage">
-          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => startMaintenance(false)} busy=${busy || ['running', 'cancelling'].includes(automation?.run?.status)} />` : ''}
-          ${page === 'library' ? html`<${Library} skills=${skills} search=${globalSearch} selected=${selected} setSelected=${setSelected} onOpen=${async skill => { try { setDetail(await api.detail(skill.id)); } catch (error) { setToast(extractError(error)); } }} onBulk=${(action, category) => run(() => api.bulk({ ids: [...selected], action, category }), '批量操作已完成').then(() => setSelected(new Set()))} onExport=${() => exportSelected([...selected], setToast)} onClassify=${() => run(() => api.classify([...selected]), 'AI 分类已完成')} busy=${busy} />` : ''}
+          ${!dashboard ? html`<${LoadingState} />` : page === 'dashboard' ? html`<${Dashboard} data=${dashboard} automation=${automation} onNavigate=${navigate} onRun=${() => startMaintenance(true)} busy=${busy || ['running', 'cancelling'].includes(automation?.run?.status)} />` : ''}
+          ${page === 'library' ? html`<${Library} skills=${skills} groups=${groupData.groups || []} ungrouped=${groupData.ungrouped} search=${globalSearch} selected=${selected} setSelected=${setSelected} onOpen=${async skill => { try { setDetail(await api.detail(skill.id)); } catch (error) { setToast(extractError(error)); } }} onBulk=${(action, groupId) => run(() => api.bulk({ ids: [...selected], action, groupId }), '批量操作已完成').then(() => setSelected(new Set()))} onToggle=${(id, enabled) => run(() => api.bulk({ ids: [id], action: enabled ? 'enable' : 'disable' }), enabled ? 'Skill 已启用' : 'Skill 已停用')} onCreateGroup=${name => run(() => api.createGroup(name), '分组已创建')} onRenameGroup=${(id, name) => run(() => api.renameGroup(id, name), '分组已重命名')} onDeleteGroup=${id => run(() => api.deleteGroup(id), '分组已删除，Skills 已移至未分组')} onGroupStatus=${(id, enabled) => run(() => api.setGroupStatus(id, enabled), result => result.failed ? `已处理 ${result.succeeded} 项，${result.failed} 项失败` : enabled ? '整组已启用' : '整组已停用')} onExport=${() => exportSelected([...selected], setToast)} onClassify=${() => run(() => api.classify([...selected]), '所选 Skills 已重新维护')} busy=${busy} />` : ''}
           ${page === 'discover' ? html`<${Discover} settings=${settings} busy=${busy} onToast=${setToast} onInstall=${payload => run(() => api.installSkills(payload), result => `已安装 ${result.installed.length} 个 Skills 到 ${result.target.name}`)} />` : ''}
           ${page === 'automation' ? html`<${Automation} status=${automation} settings=${settings} busy=${busy} onSave=${patch => run(() => api.saveSettings({ automation: patch }), '自动维护设置已保存')} onRun=${startMaintenance} onCancel=${cancelMaintenance} />` : ''}
           ${page === 'settings' ? html`<${Settings} settings=${settings} sources=${sources} appUpdate=${appUpdate} checkingUpdate=${checkingUpdate} busy=${busy} onCheckUpdate=${() => checkAppUpdate(true)} onSave=${patch => run(() => api.saveSettings(patch), '设置已保存')} onTest=${data => run(() => api.testAI(data), 'AI 连接正常')} onSourceToggle=${(id, enabled) => run(() => api.updateSource(id, { enabled }), '来源设置已更新')} onAddSource=${data => run(() => api.addSource(data), '自定义来源已添加')} onRemoveSource=${id => run(() => api.removeSource(id), '来源已移除')} onImportDb=${file => run(() => api.importDatabase(file), '数据库已恢复')} />` : ''}
         </div>
       </main>
 
-      ${detail && html`<${SkillDrawer} detail=${detail} busy=${busy} onClose=${() => setDetail(null)} onSave=${raw => run(() => api.saveSkill(detail.id, raw), 'Skill 已保存').then(() => setDetail(null))} />`}
+      ${detail && html`<${SkillDrawer} detail=${detail} groupName=${groupData.groups?.find(group => group.id === detail.groupId)?.name} busy=${busy} onClose=${() => setDetail(null)} onSave=${raw => run(() => api.saveSkill(detail.id, raw), 'Skill 已保存').then(() => setDetail(null))} />`}
       ${toast && html`<div class="toast" role="status">${toast}</div>`}
     </div>
   `;
@@ -280,7 +287,7 @@ function PageHeading({ title, description, actions }) {
 }
 
 function Dashboard({ data, automation, onNavigate, onRun, busy }) {
-  const categoryEntries = Object.entries(data.categories || {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const groupEntries = [...(data.groups || [])].sort((a, b) => b.count - a.count).slice(0, 6);
   return html`
     <section class="page dashboard-page">
       <${PageHeading} eyebrow="LOCAL SKILL OPERATIONS" title="你的 Agent 能力，一目了然" description="统一管理每一个 Skill 的来源、状态与上下文成本。" actions=${html`<button class="secondary-button" onClick=${onRun} disabled=${busy}>${busy ? '运行中…' : '立即维护'}</button><button class="primary-button" onClick=${() => onNavigate('discover')}>发现新 Skills</button>`} />
@@ -292,12 +299,12 @@ function Dashboard({ data, automation, onNavigate, onRun, busy }) {
       </div>
       <div class="dashboard-columns">
         <article class="panel category-panel">
-          <div class="panel-header"><div><span class="section-kicker">分类分布</span><h2>能力地图</h2></div><button class="text-button" onClick=${() => onNavigate('library')}>查看全部</button></div>
-          <div class="category-list">${categoryEntries.length ? categoryEntries.map(([name, count], index) => html`<button key=${name} onClick=${() => onNavigate('library')}><span class="category-rank">0${index + 1}</span><span class="category-name">${name}</span><strong>${count}</strong></button>`) : html`<div class="empty-inline">运行 AI 分类后，这里会形成你的能力地图。</div>`}</div>
+          <div class="panel-header"><div><span class="section-kicker">自定义组织</span><h2>Skills 分组</h2></div><button class="text-button" onClick=${() => onNavigate('library')}>管理分组</button></div>
+          <div class="category-list">${groupEntries.length ? groupEntries.map((group, index) => html`<button key=${group.id} onClick=${() => onNavigate('library')}><span class="category-rank">0${index + 1}</span><span class="category-name">${group.name}</span><strong>${group.count}</strong></button>`) : html`<div class="empty-inline">在 Skills 库创建分组，把常用能力整组启用或停用。</div>`}</div>
         </article>
         <article class="panel activity-panel">
           <div class="panel-header"><div><span class="section-kicker">最近变化</span><h2>本地动态</h2></div></div>
-          <div class="activity-list">${data.recentlyModified?.map(skill => html`<button key=${skill.id} onClick=${() => onNavigate('library')}><span class="agent-monogram">${(skill.agent || 'S').slice(0, 1).toUpperCase()}</span><span><strong>${skill.name}</strong><small>${AGENT_LABELS[skill.agent] || skill.sourceName} · ${skill.category}</small></span><time>${formatDate(skill.modified)}</time></button>`)}</div>
+          <div class="activity-list">${data.recentlyModified?.map(skill => html`<button key=${skill.id} onClick=${() => onNavigate('library')}><span class="agent-monogram">${(skill.agent || 'S').slice(0, 1).toUpperCase()}</span><span><strong>${skill.name}</strong><small>${AGENT_LABELS[skill.agent] || skill.sourceName} · ${skill.isEnabled ? '已启用' : '已停用'}</small></span><time>${formatDate(skill.modified)}</time></button>`)}</div>
         </article>
       </div>
       <article class="source-strip"><div><span class="section-kicker">连接状态</span><h2>Agent 来源</h2></div><div class="source-chips">${data.sources?.map(source => html`<span class=${source.exists && source.enabled ? 'source-chip connected' : 'source-chip'} key=${source.id}><i></i>${source.name}<b>${source.exists ? '已发现' : '未安装'}</b></span>`)}</div></article>
@@ -305,34 +312,71 @@ function Dashboard({ data, automation, onNavigate, onRun, busy }) {
   `;
 }
 
-function Library({ skills, search, selected, setSelected, onOpen, onBulk, onExport, onClassify, busy }) {
+function Library({ skills, groups, ungrouped, search, selected, setSelected, onOpen, onBulk, onToggle, onCreateGroup, onRenameGroup, onDeleteGroup, onGroupStatus, onExport, onClassify, busy }) {
   const [agent, setAgent] = useState('all');
   const [state, setState] = useState('all');
-  const [category, setCategory] = useState('all');
+  const [activeGroup, setActiveGroup] = useState('all');
   const [view, setView] = useState('table');
-  const categories = [...new Set(skills.map(skill => skill.category).filter(Boolean))].sort();
+  const [newGroup, setNewGroup] = useState('');
+  const groupNames = useMemo(() => new Map(groups.map(group => [group.id, group.name])), [groups]);
+  useEffect(() => {
+    if (!['all', 'ungrouped'].includes(activeGroup) && !groupNames.has(activeGroup)) setActiveGroup('all');
+  }, [activeGroup, groupNames]);
   const filtered = useMemo(() => skills.filter(skill => {
-    const haystack = `${skill.name} ${skill.description} ${skill.category} ${(skill.tags || []).join(' ')} ${skill.sourceName}`.toLowerCase();
-    return (!search || haystack.includes(search.toLowerCase())) && (agent === 'all' || skill.agent === agent) && (state === 'all' || (state === 'enabled') === skill.isEnabled) && (category === 'all' || skill.category === category);
-  }), [skills, search, agent, state, category]);
+    const groupName = groupNames.get(skill.groupId) || '';
+    const haystack = `${skill.name} ${skill.description} ${groupName} ${(skill.tags || []).join(' ')} ${skill.sourceName}`.toLowerCase();
+    const groupMatch = activeGroup === 'all' || (activeGroup === 'ungrouped' ? !skill.groupId || !groupNames.has(skill.groupId) : skill.groupId === activeGroup);
+    return (!search || haystack.includes(search.toLowerCase())) && groupMatch && (agent === 'all' || skill.agent === agent) && (state === 'all' || (state === 'enabled') === skill.isEnabled);
+  }), [skills, search, agent, state, activeGroup, groupNames]);
   const allSelected = filtered.length > 0 && filtered.every(skill => selected.has(skill.id));
   function toggle(id) { const next = new Set(selected); next.has(id) ? next.delete(id) : next.add(id); setSelected(next); }
   function toggleAll() { const next = new Set(selected); filtered.forEach(skill => allSelected ? next.delete(skill.id) : next.add(skill.id)); setSelected(next); }
+  function submitGroup(event) {
+    event.preventDefault();
+    const name = newGroup.trim();
+    if (!name) return;
+    onCreateGroup(name)?.then(() => setNewGroup(''));
+  }
   return html`
     <section class="page library-page">
-      <${PageHeading} eyebrow="UNIFIED INVENTORY" title="Skills 库" description="跨 Agent 检索、分组与控制本地上下文。" actions=${html`<div class="view-toggle"><button class=${view === 'table' ? 'active' : ''} onClick=${() => setView('table')}>列表</button><button class=${view === 'grid' ? 'active' : ''} onClick=${() => setView('grid')}>卡片</button></div>`} />
-      <div class="filter-row">
-        <select value=${agent} onChange=${event => setAgent(event.target.value)} aria-label="Agent 来源"><option value="all">全部 Agent</option>${Object.entries(AGENT_LABELS).map(([id, label]) => html`<option value=${id}>${label}</option>`)}</select>
-        <select value=${category} onChange=${event => setCategory(event.target.value)} aria-label="分类"><option value="all">全部分类</option>${categories.map(item => html`<option value=${item}>${item}</option>`)}</select>
-        <select value=${state} onChange=${event => setState(event.target.value)} aria-label="启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select>
-        <span class="result-count">显示 ${filtered.length} / ${skills.length}</span>
+      <${PageHeading} title="Skills 库" description="用自己的分组组织能力；开关立即生效，AI 维护不再制造新的资料夹。" actions=${html`<div class="view-toggle"><button class=${view === 'table' ? 'active' : ''} onClick=${() => setView('table')}>列表</button><button class=${view === 'grid' ? 'active' : ''} onClick=${() => setView('grid')}>卡片</button></div>`} />
+      <div class="library-layout">
+        <aside class="group-rail" aria-label="Skills 分组">
+          <div class="group-rail-head"><span>我的分组</span><strong>${groups.length}</strong></div>
+          <button class=${activeGroup === 'all' ? 'group-filter active' : 'group-filter'} onClick=${() => setActiveGroup('all')}><span class="group-dot all"></span><span>全部 Skills</span><b>${skills.length}</b></button>
+          <button class=${activeGroup === 'ungrouped' ? 'group-filter active' : 'group-filter'} onClick=${() => setActiveGroup('ungrouped')}><span class="group-dot empty"></span><span>未分组</span><b>${ungrouped?.count || 0}</b></button>
+          <div class="group-list">${groups.map(group => html`
+            <div class=${activeGroup === group.id ? 'group-row active' : 'group-row'} key=${group.id}>
+              <button class="group-filter" onClick=${() => setActiveGroup(group.id)} title=${group.name}><span class="group-dot"></span><span>${group.name}</span><b>${group.enabled}/${group.count}</b></button>
+              <div class="group-row-actions">
+                <button onClick=${() => onGroupStatus(group.id, group.enabled < group.count)} disabled=${busy || !group.count} title=${group.enabled < group.count ? '整组启用' : '整组停用'} aria-label=${`${group.name}${group.enabled < group.count ? '整组启用' : '整组停用'}`}>${group.enabled < group.count ? '▶' : 'Ⅱ'}</button>
+                <button onClick=${() => { const name = prompt('重命名分组', group.name); if (name?.trim() && name.trim() !== group.name) onRenameGroup(group.id, name); }} disabled=${busy} title="重命名" aria-label=${`重命名 ${group.name}`}>✎</button>
+                <button onClick=${() => confirm(`删除分组“${group.name}”？Skills 不会被删除。`) && onDeleteGroup(group.id)} disabled=${busy} title="删除分组" aria-label=${`删除分组 ${group.name}`}>×</button>
+              </div>
+            </div>
+          `)}</div>
+          <form class="group-create" onSubmit=${submitGroup}><input value=${newGroup} onInput=${event => setNewGroup(event.target.value)} maxlength="40" placeholder="新建分组" aria-label="新分组名称" /><button disabled=${busy || !newGroup.trim()} aria-label="创建分组">＋</button></form>
+          <p>整组开关只移动本地 Skills，插件内容保持原样。</p>
+        </aside>
+        <div class="library-content">
+          <div class="filter-row">
+            <select value=${agent} onChange=${event => setAgent(event.target.value)} aria-label="Agent 来源"><option value="all">全部 Agent</option>${Object.entries(AGENT_LABELS).map(([id, label]) => html`<option value=${id}>${label}</option>`)}</select>
+            <select value=${state} onChange=${event => setState(event.target.value)} aria-label="启用状态"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select>
+            <span class="result-count">显示 ${filtered.length} / ${skills.length}</span>
+          </div>
+          ${selected.size > 0 && html`<div class="bulk-bar" role="toolbar"><strong>已选 ${selected.size} 项</strong><button onClick=${() => onBulk('enable')} disabled=${busy}>启用</button><button onClick=${() => onBulk('disable')} disabled=${busy}>停用</button><label class="bulk-group"><span>移至</span><select value="" onChange=${event => { const value = event.target.value; onBulk('group', value === '__ungrouped' ? null : value); event.currentTarget.value = ''; }} disabled=${busy}><option value="" disabled>选择分组</option><option value="__ungrouped">未分组</option>${groups.map(group => html`<option value=${group.id}>${group.name}</option>`)}</select></label><button onClick=${onClassify} disabled=${busy}>AI 重新维护</button><button onClick=${onExport}>导出</button><button class="danger-text" onClick=${() => confirm(`确定永久删除 ${selected.size} 个 Skills？`) && onBulk('delete')} disabled=${busy}>删除</button><button class="bulk-close" onClick=${() => setSelected(new Set())}>取消</button></div>`}
+          ${filtered.length === 0 ? html`<${EmptyState} title="这里还没有 Skills" text="调整筛选条件，或把 Skills 移入当前分组。" />` : view === 'table' ? html`
+            <div class="skills-table-wrap"><table class="skills-table"><thead><tr><th><input type="checkbox" checked=${allSelected} onChange=${toggleAll} aria-label="选择全部" /></th><th>Skill</th><th>Agent / 来源</th><th>分组</th><th>状态</th><th>修改时间</th><th></th></tr></thead><tbody>${filtered.map(skill => html`<tr key=${skill.id} class=${selected.has(skill.id) ? 'selected' : ''}><td><input type="checkbox" checked=${selected.has(skill.id)} onChange=${() => toggle(skill.id)} aria-label=${`选择 ${skill.name}`} /></td><td><button class="skill-name-button" onClick=${() => onOpen(skill)}><span class="skill-avatar">${skill.name.slice(0, 1).toUpperCase()}</span><span><strong>${skill.name}</strong><small>${skill.description || '暂无描述'}</small></span></button></td><td><span class="agent-label">${AGENT_LABELS[skill.agent] || skill.agent}</span><small class="source-sub">${skill.sourceName}</small></td><td><span class=${skill.groupId ? 'group-badge' : 'group-badge muted'}>${groupNames.get(skill.groupId) || '未分组'}</span></td><td><${StatusSwitch} skill=${skill} busy=${busy} onToggle=${onToggle} /></td><td><time>${formatDate(skill.modified)}</time></td><td><button class="row-action" onClick=${() => onOpen(skill)} aria-label=${`查看 ${skill.name}`}>→</button></td></tr>`)}</tbody></table></div>
+          ` : html`<div class="skills-grid">${filtered.map(skill => html`<article class=${selected.has(skill.id) ? 'skill-card selected' : 'skill-card'} key=${skill.id}><div class="card-select"><input type="checkbox" checked=${selected.has(skill.id)} onChange=${() => toggle(skill.id)} aria-label=${`选择 ${skill.name}`} /></div><button class="skill-card-main" onClick=${() => onOpen(skill)}><span class="skill-avatar large">${skill.name.slice(0, 1).toUpperCase()}</span><h3>${skill.name}</h3><p>${skill.description || '暂无描述'}</p><span class=${skill.groupId ? 'group-badge' : 'group-badge muted'}>${groupNames.get(skill.groupId) || '未分组'}</span><small>${AGENT_LABELS[skill.agent] || skill.agent} · ${skill.fileCount} files</small></button><div class="skill-card-status"><span>${skill.isEnabled ? '参与上下文' : '已移出上下文'}</span><${StatusSwitch} skill=${skill} busy=${busy} onToggle=${onToggle} /></div></article>`)}</div>`}
+        </div>
       </div>
-      ${selected.size > 0 && html`<div class="bulk-bar" role="toolbar"><strong>已选 ${selected.size} 项</strong><button onClick=${() => onBulk('enable')} disabled=${busy}>启用</button><button onClick=${() => onBulk('disable')} disabled=${busy}>停用</button><button onClick=${() => { const categoryName = prompt('输入分类名称'); if (categoryName) onBulk('categorize', categoryName); }}>分类</button><button onClick=${onClassify} disabled=${busy}>AI 分类</button><button onClick=${onExport}>导出</button><button class="danger-text" onClick=${() => confirm(`确定永久删除 ${selected.size} 个 Skills？`) && onBulk('delete')} disabled=${busy}>删除</button><button class="bulk-close" onClick=${() => setSelected(new Set())}>取消选择</button></div>`}
-      ${filtered.length === 0 ? html`<${EmptyState} title="没有匹配的 Skills" text="调整筛选条件，或导入一个新的 Skill 包。" />` : view === 'table' ? html`
-        <div class="skills-table-wrap"><table class="skills-table"><thead><tr><th><input type="checkbox" checked=${allSelected} onChange=${toggleAll} aria-label="选择全部" /></th><th>Skill</th><th>Agent / 来源</th><th>分类</th><th>状态</th><th>修改时间</th><th></th></tr></thead><tbody>${filtered.map(skill => html`<tr key=${skill.id} class=${selected.has(skill.id) ? 'selected' : ''}><td><input type="checkbox" checked=${selected.has(skill.id)} onChange=${() => toggle(skill.id)} aria-label=${`选择 ${skill.name}`} /></td><td><button class="skill-name-button" onClick=${() => onOpen(skill)}><span class="skill-avatar">${skill.name.slice(0, 1).toUpperCase()}</span><span><strong>${skill.name}</strong><small>${skill.description || '暂无描述'}</small></span></button></td><td><span class="agent-label">${AGENT_LABELS[skill.agent] || skill.agent}</span><small class="source-sub">${skill.sourceName}</small></td><td><span class="category-badge">${skill.category}</span></td><td><span class=${skill.isEnabled ? 'state enabled' : 'state disabled'}><i></i>${skill.isEnabled ? '启用' : '停用'}</span></td><td><time>${formatDate(skill.modified)}</time></td><td><button class="row-action" onClick=${() => onOpen(skill)} aria-label=${`查看 ${skill.name}`}>→</button></td></tr>`)}</tbody></table></div>
-      ` : html`<div class="skills-grid">${filtered.map(skill => html`<article class=${selected.has(skill.id) ? 'skill-card selected' : 'skill-card'} key=${skill.id}><div class="card-select"><input type="checkbox" checked=${selected.has(skill.id)} onChange=${() => toggle(skill.id)} /></div><button onClick=${() => onOpen(skill)}><span class="skill-avatar large">${skill.name.slice(0, 1).toUpperCase()}</span><h3>${skill.name}</h3><p>${skill.description || '暂无描述'}</p><div><span class="category-badge">${skill.category}</span><span class=${skill.isEnabled ? 'state enabled' : 'state disabled'}><i></i>${skill.isEnabled ? '启用' : '停用'}</span></div><small>${AGENT_LABELS[skill.agent] || skill.agent} · ${skill.fileCount} files</small></button></article>`)}</div>`}
     </section>
   `;
+}
+
+function StatusSwitch({ skill, busy, onToggle }) {
+  const editable = skill.source === 'local';
+  return html`<button class=${skill.isEnabled ? 'status-switch enabled' : 'status-switch'} role="switch" aria-checked=${skill.isEnabled} aria-label=${`${skill.isEnabled ? '停用' : '启用'} ${skill.name}`} title=${editable ? (skill.isEnabled ? '停用并移出 Agent 扫描目录' : '启用并恢复到 Agent 扫描目录') : '插件型 Skill 由插件管理'} disabled=${busy || !editable} onClick=${event => { event.stopPropagation(); onToggle(skill.id, !skill.isEnabled); }}><span></span><b>${skill.isEnabled ? '开' : '关'}</b></button>`;
 }
 
 function Discover({ settings, busy, onToast, onInstall }) {
@@ -477,7 +521,7 @@ function MaintenanceRun({ run, onCancel }) {
   return html`<article class=${active ? 'maintenance-progress active' : `maintenance-progress ${run.status}`} aria-live="polite">
     <div class="maintenance-progress-head"><div class="run-glyph" aria-hidden="true"><i></i><i></i><i></i></div><div><span>${phase}</span><h2>${run.message || '正在维护 Skills'}</h2><p>${run.current ? `当前：${run.current}` : active ? '任务在后台运行，你可以继续浏览和管理 Skills。' : formatDate(run.finishedAt)}</p></div>${active && html`<button class="secondary-button compact" onClick=${onCancel} disabled=${run.status === 'cancelling'}>${run.status === 'cancelling' ? '正在停止…' : '停止任务'}</button>`}</div>
     <progress class="progress-track" aria-label="维护进度" max="100" value=${run.total ? Math.max(2.5, progress) : 2.5}>${progress}%</progress>
-    <div class="progress-meta"><span>${run.total ? `${run.completed} / ${run.total}` : '正在计算工作量'}</span><span>${run.remaining ? `本批完成后仍有 ${run.remaining} 项` : active ? '保持应用开启即可' : run.status}</span></div>
+    <div class="progress-meta"><span>${run.total ? `${run.completed} / ${run.total}` : '正在计算工作量'}</span><span>${active ? '有界并发运行中，可继续使用应用' : run.status}</span></div>
   </article>`;
 }
 
@@ -490,7 +534,7 @@ function Automation({ status, settings, busy, onSave, onRun, onCancel }) {
   return html`<section class="page automation-page"><${PageHeading} eyebrow="AUTOMATED MAINTENANCE" title="可追踪、可回滚的 Skills 维护" description="只更新具有明确 GitHub 来源记录的 Skills；每次更新先静态复检并备份，新增高风险时自动停止。" actions=${html`<button class="secondary-button" onClick=${() => onRun(Boolean(form.classification))} disabled=${busy || maintenanceActive}>${maintenanceActive ? '后台运行中…' : '立即运行一次'}</button><button class="primary-button" onClick=${() => onSave(form)} disabled=${busy}>保存设置</button>`} />
     <${MaintenanceRun} run=${status?.run} onCancel=${onCancel} />
     ${!status.updates?.eligible && html`<div class="maintenance-notice"><strong>当前没有可更新的跟踪来源</strong><span>通过“发现 → 检查并安装”添加的 Skills 会自动记录仓库、commit 和子路径；已有本地 Skills 不会被猜测来源或擅自覆盖。</span></div>`}
-    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>单次 AI 分类数量<select value=${form.classificationBatchSize || 25} onChange=${event => update({ classificationBatchSize: Number(event.target.value) })}><option value="10">10 个</option><option value="25">25 个</option><option value="50">50 个</option><option value="100">100 个</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 分批自动分类</strong><small>${settings.ai.enabled ? `限定为 10 个大类；仅处理未分类或内容已变化的 Skills，稳定结果不会重复覆盖` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
+    <div class="automation-layout"><article class="panel automation-control"><div class="toggle-line"><div><span class="section-kicker">主开关</span><h2>定期自动维护</h2><p>仅在 SkillPilot 正在运行或驻留托盘时执行。下次运行时间会持久保存，重启不会立即误触发。</p></div><label class="switch"><input type="checkbox" checked=${Boolean(form.enabled)} onChange=${event => update({ enabled: event.target.checked })} /><span></span></label></div><div class="form-grid"><div class="schedule-fields"><label>运行间隔<select value=${form.intervalHours || 24} onChange=${event => update({ intervalHours: Number(event.target.value) })}><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="168">每周</option></select></label><label>AI 并行任务数<select value=${form.classificationConcurrency || 3} onChange=${event => update({ classificationConcurrency: Number(event.target.value) })}><option value="1">1（最稳妥）</option><option value="2">2</option><option value="3">3（推荐）</option><option value="4">4</option><option value="6">6</option><option value="8">8（高性能设备）</option></select></label></div><div class="option-stack"><label><input type="checkbox" checked=${Boolean(form.updateChecks)} onChange=${event => update({ updateChecks: event.target.checked })} /><span><strong>检查来源更新</strong><small>仅比较已登记来源的默认分支 commit，并分别报告检查、跳过与失败</small></span></label><label><input type="checkbox" checked=${Boolean(form.autoUpdate)} onChange=${event => update({ autoUpdate: event.target.checked })} /><span><strong>自动应用低风险更新</strong><small>先备份再原子替换；高风险、路径变化或扫描不完整时停止更新</small></span></label><label><input type="checkbox" checked=${Boolean(form.classification)} onChange=${event => update({ classification: event.target.checked })} /><span><strong>AI 全量自动维护</strong><small>${settings.ai.enabled ? `每次覆盖全部已启用 Skills；最多同时运行 ${form.classificationConcurrency || 3} 个请求，结果原位更新、不重复堆积` : '请先在设置中启用 AI'}</small></span></label></div></div></article>
       <article class="panel run-status"><span class=${status.isRunning ? 'run-orb active' : 'run-orb'}></span><span class="section-kicker">运行状态</span><h2>${status.isRunning ? '维护任务执行中' : '系统空闲'}</h2><p>上次运行：${formatDate(status.lastScheduledRun)}<br />下次计划：${formatDate(status.nextRunAt)}</p><dl><div><dt>可跟踪</dt><dd>${status.updates?.eligible || 0}</dd></div><div><dt>待更新</dt><dd>${status.updates?.total || 0}</dd></div><div><dt>异常</dt><dd>${status.updates?.failed || 0}</dd></div></dl></article></div>
     <article class="panel history-panel"><div class="panel-header"><div><span class="section-kicker">审计记录</span><h2>最近任务</h2></div></div>${status.history?.length ? html`<div class="history-list">${status.history.map(item => html`<div key=${item.id}><span class=${`history-status ${item.status}`}></span><span><strong>${item.message}</strong><small>${item.type}</small></span><time>${formatDate(item.at)}</time></div>`)}</div>` : html`<${EmptyState} title="还没有维护记录" text="运行一次维护任务后，结果会保存在这里。" />`}</article>
   </section>`;
@@ -524,7 +568,7 @@ function AppUpdateCard({ status, checking, onCheck }) {
   </article>`;
 }
 
-function SkillDrawer({ detail, busy, onClose, onSave }) {
+function SkillDrawer({ detail, groupName, busy, onClose, onSave }) {
   const [editing, setEditing] = useState(false);
   const [raw, setRaw] = useState('');
   function beginEdit() {
@@ -533,7 +577,7 @@ function SkillDrawer({ detail, busy, onClose, onSave }) {
     setRaw(lines.length ? `---\n${lines.join('\n')}\n---\n${detail.content || ''}` : detail.content || '');
     setEditing(true);
   }
-  return html`<div class="drawer-overlay" onClick=${event => event.target === event.currentTarget && onClose()}><aside class="skill-drawer" role="dialog" aria-modal="true" aria-labelledby="skill-title"><header><div><span class="section-kicker">${detail.sourceName || detail.source}</span><h2 id="skill-title">${detail.name}</h2></div><button class="icon-button" onClick=${onClose} aria-label="关闭">×</button></header><p class="drawer-description">${detail.description || '暂无描述'}</p><div class="drawer-badges"><span class="category-badge">${detail.category}</span><span class=${detail.isEnabled ? 'state enabled' : 'state disabled'}><i></i>${detail.isEnabled ? '启用' : '停用'}</span>${detail.risk !== 'unknown' && html`<span class=${`risk ${detail.risk}`}>风险 ${detail.risk}</span>`}</div><dl class="drawer-meta"><div><dt>Agent</dt><dd>${AGENT_LABELS[detail.agent] || detail.agent}</dd></div><div><dt>文件</dt><dd>${detail.fileCount}</dd></div><div><dt>版本</dt><dd>${detail.version || '未标注'}</dd></div><div><dt>最近修改</dt><dd>${formatDate(detail.modified)}</dd></div></dl><section><h3>本地路径</h3><code>${detail.path}</code></section><section class="content-section"><h3>${editing ? '编辑 SKILL.md' : '内容预览'}</h3>${editing ? html`<textarea value=${raw} onInput=${event => setRaw(event.target.value)} aria-label="SKILL.md 内容"></textarea>` : html`<pre>${(detail.content || '没有可预览的内容').trim()}</pre>`}</section><footer>${editing ? html`<button class="primary-button" onClick=${() => onSave(raw)} disabled=${busy}>保存修改</button><button class="secondary-button" onClick=${() => setEditing(false)}>取消</button>` : detail.source === 'local' && detail.isEnabled ? html`<button class="primary-button" onClick=${beginEdit}>编辑文件</button>` : ''}<button class="secondary-button drawer-close" onClick=${onClose}>关闭</button></footer></aside></div>`;
+  return html`<div class="drawer-overlay" onClick=${event => event.target === event.currentTarget && onClose()}><aside class="skill-drawer" role="dialog" aria-modal="true" aria-labelledby="skill-title"><header><div><span class="section-kicker">${detail.sourceName || detail.source}</span><h2 id="skill-title">${detail.name}</h2></div><button class="icon-button" onClick=${onClose} aria-label="关闭">×</button></header><p class="drawer-description">${detail.description || '暂无描述'}</p><div class="drawer-badges"><span class=${groupName ? 'group-badge' : 'group-badge muted'}>${groupName || '未分组'}</span><span class=${detail.isEnabled ? 'state enabled' : 'state disabled'}><i></i>${detail.isEnabled ? '启用' : '停用'}</span>${detail.risk !== 'unknown' && html`<span class=${`risk ${detail.risk}`}>风险 ${detail.risk}</span>`}</div><dl class="drawer-meta"><div><dt>Agent</dt><dd>${AGENT_LABELS[detail.agent] || detail.agent}</dd></div><div><dt>文件</dt><dd>${detail.fileCount}</dd></div><div><dt>版本</dt><dd>${detail.version || '未标注'}</dd></div><div><dt>最近修改</dt><dd>${formatDate(detail.modified)}</dd></div></dl><section><h3>本地路径</h3><code>${detail.path}</code></section><section class="content-section"><h3>${editing ? '编辑 SKILL.md' : '内容预览'}</h3>${editing ? html`<textarea value=${raw} onInput=${event => setRaw(event.target.value)} aria-label="SKILL.md 内容"></textarea>` : html`<pre>${(detail.content || '没有可预览的内容').trim()}</pre>`}</section><footer>${editing ? html`<button class="primary-button" onClick=${() => onSave(raw)} disabled=${busy}>保存修改</button><button class="secondary-button" onClick=${() => setEditing(false)}>取消</button>` : detail.source === 'local' && detail.isEnabled ? html`<button class="primary-button" onClick=${beginEdit}>编辑文件</button>` : ''}<button class="secondary-button drawer-close" onClick=${onClose}>关闭</button></footer></aside></div>`;
 }
 
 function EmptyState({ title, text }) {

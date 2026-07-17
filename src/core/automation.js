@@ -34,7 +34,7 @@ export function classificationFingerprint(skill) {
   return createHash('sha256').update(input).digest('hex');
 }
 
-export function selectSkillsForClassification(skills, ids = [], limit = 25, options = {}) {
+export function selectSkillsForClassification(skills, ids = [], _limit = 25, _options = {}) {
   const wanted = new Set(ids);
   const eligible = skills.filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id)));
   return {

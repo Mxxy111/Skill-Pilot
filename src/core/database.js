@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 import { randomUUID } from 'node:crypto';
 import { DATABASE_FILE } from './paths.js';
@@ -82,12 +82,15 @@ export function validateBackup(input) {
 }
 
 export function createDatabase(file = DATABASE_FILE) {
+  const replaceBackup = `${file}.replace-backup`;
   function read() {
     try {
+      if (!existsSync(file) && existsSync(replaceBackup)) renameSync(replaceBackup, file);
       const parsed = JSON.parse(readFileSync(file, 'utf8'));
-      return validateBackup(parsed);
+      const validated = validateBackup(parsed);
+      return parsed.schemaVersion === SCHEMA_VERSION ? validated : write(validated);
     } catch (error) {
-      if (existsSync(file) && !String(error.message).includes('ENOENT')) throw error;
+      if ((existsSync(file) || existsSync(replaceBackup)) && !String(error.message).includes('ENOENT')) throw error;
       return clone(DEFAULT_DATA);
     }
   }
@@ -96,8 +99,18 @@ export function createDatabase(file = DATABASE_FILE) {
     const valid = validateBackup(data);
     mkdirSync(dirname(file), { recursive: true });
     const temp = `${file}.${process.pid}.tmp`;
+    const backup = replaceBackup;
     writeFileSync(temp, JSON.stringify(valid, null, 2) + '\n', { mode: 0o600 });
-    renameSync(temp, file);
+    try {
+      if (existsSync(backup)) rmSync(backup, { force: true });
+      if (existsSync(file)) renameSync(file, backup);
+      renameSync(temp, file);
+      if (existsSync(backup)) rmSync(backup, { force: true });
+    } catch (error) {
+      if (!existsSync(file) && existsSync(backup)) renameSync(backup, file);
+      if (existsSync(temp)) rmSync(temp, { force: true });
+      throw error;
+    }
     return valid;
   }
 

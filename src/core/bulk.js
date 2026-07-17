@@ -6,9 +6,10 @@ import { database } from './database.js';
 import { BACKUP_DIR, DISABLED_DIR } from './paths.js';
 import { getSkill, listAll } from './inventory.js';
 
-function requireLocalSkill(id) {
-  const skill = getSkill(id);
+function requireLocalSkill(id, knownSkill = null) {
+  const skill = knownSkill || getSkill(id);
   if (!skill) throw new Error(`Skill not found: ${id}`);
+  if (skill.id !== id) throw new Error('Skill identity does not match the requested operation.');
   if (skill.source !== 'local') throw new Error(`Plugin-backed skill cannot be modified: ${skill.name}`);
   return skill;
 }
@@ -19,25 +20,26 @@ function assertWithin(path, root) {
   if (target !== allowed && !target.startsWith(allowed + sep)) throw new Error('Skill path is outside its registered source.');
 }
 
-export function setSkillEnabled(id, enabled) {
-  const skill = requireLocalSkill(id);
+export function setSkillEnabled(id, enabled, knownSkill = null) {
+  const skill = requireLocalSkill(id, knownSkill);
   if (skill.isEnabled === enabled) return skill;
   const disabledRoot = join(DISABLED_DIR, skill.sourceId);
+  let target;
   if (enabled) {
     assertWithin(skill.path, disabledRoot);
     mkdirSync(skill.rootPath, { recursive: true });
-    const target = join(skill.rootPath, skill.dirName);
+    target = join(skill.rootPath, skill.dirName);
     if (existsSync(target)) throw new Error(`Cannot enable ${skill.name}: destination already exists.`);
     movePath(skill.path, target);
   } else {
     assertWithin(skill.path, skill.rootPath);
     mkdirSync(disabledRoot, { recursive: true });
-    const target = join(disabledRoot, skill.dirName);
+    target = join(disabledRoot, skill.dirName);
     if (existsSync(target)) throw new Error(`Cannot disable ${skill.name}: disabled copy already exists.`);
     movePath(skill.path, target);
   }
   database.updateSkill(id, { isEnabled: enabled });
-  return getSkill(id);
+  return { ...skill, path: target, isEnabled: enabled };
 }
 
 function movePath(source, target) {
@@ -95,9 +97,11 @@ export function exportSkills(ids, outputDir = tmpdir(), prefix = 'export') {
 
 export function runBulkAction({ ids, action, groupId }) {
   const selected = [...new Set(Array.isArray(ids) ? ids.map(String) : [])];
-  if (!selected.length || selected.length > 200) throw new Error('Select between 1 and 200 skills.');
-  if (action === 'enable') return selected.map(id => setSkillEnabled(id, true));
-  if (action === 'disable') return selected.map(id => setSkillEnabled(id, false));
+  if (!selected.length || selected.length > 500) throw new Error('Select between 1 and 500 skills.');
+  if (action === 'enable' || action === 'disable') {
+    const indexed = new Map(listAll().map(skill => [skill.id, skill]));
+    return selected.map(id => setSkillEnabled(id, action === 'enable', indexed.get(id)));
+  }
   if (action === 'group') return assignSkillsToGroup(selected, groupId);
   if (action === 'delete') return deleteSkills(selected);
   throw new Error('Unsupported bulk action.');

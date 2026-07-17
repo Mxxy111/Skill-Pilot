@@ -1,6 +1,6 @@
 {
   "name": "skillpilot-local",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Local operations center for managing AI Agent Skills across Claude, Codex, OpenClaw, Gemini, Cursor and custom sources",
   "type": "module",
   "main": "desktop/main.js",

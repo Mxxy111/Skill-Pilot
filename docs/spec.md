@@ -45,7 +45,10 @@ Successful responses return their resource or `{ ok: true, ... }`. New errors us
 
 - `GET /api/dashboard`: inventory and maintenance summary
 - `GET /api/skills`: enriched inventory from all enabled sources
-- `POST /api/skills/bulk`: `enable`, `disable`, `categorize`, `delete`, or `export`
+- `POST /api/skills/bulk`: `enable`, `disable`, `group`, or `delete`
+- `GET|POST /api/groups`: list summaries or create a custom group
+- `PATCH|DELETE /api/groups/:id`: rename or remove a group without deleting Skills
+- `POST /api/groups/:id/status`: enable or disable every local Skill in a group
 - `GET|PUT /api/settings`: public/redacted settings and validated updates
 - `GET|POST /api/sources`: list or add custom local roots
 - `PATCH|DELETE /api/sources/:id`: update or remove a custom root
@@ -64,9 +67,10 @@ Successful responses return their resource or `{ ok: true, ... }`. New errors us
 ## Code style
 
 ```js
-export function normalizeCategory(value) {
-  const category = String(value || '').trim().toLowerCase();
-  return category || 'uncategorized';
+export function normalizeGroupName(value) {
+  const name = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!name) throw new Error('Group name is required.');
+  return name.slice(0, 40);
 }
 ```
 
@@ -87,10 +91,10 @@ Use small ESM modules, explicit names, boundary validation, immutable return val
 ## Success criteria
 
 - At least five built-in Agent source types and arbitrary custom roots are supported.
-- Multi-select batch enable/disable/categorize/delete/export works with confirmations for destructive actions.
+- Multi-select batch enable/disable/group/delete/export works with confirmations for destructive actions.
 - GitHub results support popular/latest ordering and surface stars, activity, license and topics.
 - AI configuration supports `/v1/chat/completions`, including Ollama-compatible endpoints, with manual and bounded scheduled classification plus optional discovery recommendations.
-- AI classification maps all model output into ten stable top-level categories and scheduled maintenance skips unchanged classifications.
+- AI analysis maps model output into ten stable internal themes while custom groups own library organization. Scheduled maintenance covers all enabled local Skills with 1–8 bounded concurrent requests and overwrites existing metadata records.
 - GitHub installation is commit-pinned, path-bounded and rescanned immediately before writing; installed provenance supports backup-first atomic updates.
 - Application update checks compare stable semantic versions from the latest published `Mxxy111/Skill-Pilot` GitHub Release and never execute assets automatically.
 - Database import/export is schema-versioned and rejects malformed backups.

@@ -117,7 +117,7 @@ async function cachedFetch(url, options) {
   const cached = cache.get(url);
   if (useCache && cached?.expiresAt > Date.now()) return cached.value;
   const response = await options.fetchImpl(url, {
-    headers: { Accept: 'application/json, text/html;q=0.9', 'User-Agent': 'SkillPilot-Local/0.8.0' },
+    headers: { Accept: 'application/json, text/html;q=0.9', 'User-Agent': 'SkillPilot-Local/0.9.0' },
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error(`Skills catalog returned HTTP ${response.status}.`);

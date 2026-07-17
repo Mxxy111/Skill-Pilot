@@ -23,7 +23,8 @@ test('group status operation continues after an individual failure and skips plu
   const result = setGroupEnabled('g1', true, {
     groups: [{ id: 'g1', name: 'Work' }],
     skills,
-    setEnabled: id => {
+    setEnabled: (id, _enabled, skill) => {
+      assert.equal(skill.id, id);
       if (id === 'local:b') throw new Error('blocked');
       return { id, isEnabled: true };
     }

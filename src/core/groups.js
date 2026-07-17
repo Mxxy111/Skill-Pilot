@@ -32,10 +32,10 @@ export function setGroupEnabled(groupId, enabled, options = {}) {
   if (!groups.some(group => group.id === groupId)) throw new Error('Group not found.');
   const members = (options.skills || listAll()).filter(skill => skill.groupId === groupId);
   const local = members.filter(skill => skill.source === 'local');
-  const setEnabled = options.setEnabled || setSkillEnabled;
+  const setEnabled = options.setEnabled || ((id, next, skill) => setSkillEnabled(id, next, skill));
   const results = local.map(skill => {
     try {
-      return { id: skill.id, ok: true, skill: setEnabled(skill.id, Boolean(enabled)) };
+      return { id: skill.id, ok: true, skill: setEnabled(skill.id, Boolean(enabled), skill) };
     } catch (error) {
       return { id: skill.id, ok: false, error: error.message };
     }

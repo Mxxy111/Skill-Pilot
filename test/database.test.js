@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDatabase, SCHEMA_VERSION, validateBackup } from '../src/core/database.js';
@@ -62,6 +62,40 @@ test('schema v1 migration clears legacy classification and introduces empty grou
   assert.deepEqual(migrated.groups, []);
   assert.equal(migrated.settings.automation.classificationConcurrency, 3);
   assert.equal(migrated.settings.automation.classificationBatchSize, undefined);
+});
+
+test('opening a schema v1 database safely persists the migration on Windows', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skillpilot-migration-'));
+  const file = join(dir, 'database.json');
+  writeFileSync(file, JSON.stringify({
+    schemaVersion: 1,
+    skills: { 'codex:writer': { category: 'Old category' } },
+    customSources: [],
+    settings: {},
+    history: []
+  }));
+
+  const snapshot = createDatabase(file).snapshot();
+  assert.equal(snapshot.schemaVersion, SCHEMA_VERSION);
+  assert.equal(snapshot.skills['codex:writer'].category, undefined);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).schemaVersion, SCHEMA_VERSION);
+});
+
+test('database restores an interrupted replacement backup before reading', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'skillpilot-recovery-'));
+  const file = join(dir, 'database.json');
+  writeFileSync(`${file}.replace-backup`, JSON.stringify({
+    schemaVersion: SCHEMA_VERSION,
+    skills: { 'codex:writer': { isFavorite: true } },
+    groups: [],
+    customSources: [],
+    settings: {},
+    history: []
+  }));
+
+  const snapshot = createDatabase(file).snapshot();
+  assert.equal(snapshot.skills['codex:writer'].isFavorite, true);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).schemaVersion, SCHEMA_VERSION);
 });
 
 test('database supports custom group CRUD and unassigns skills when a group is deleted', () => {

@@ -27,6 +27,15 @@ Supported `targetAgent` values are `claude`, `codex`, `agents`, `openclaw`, `gem
 - The endpoint never downloads or executes an installer. A one-hour in-memory cache avoids unnecessary GitHub API usage; `force=1` is reserved for an explicit user refresh.
 - Legacy `GET /api/version` remains as a reduced compatibility view of the same GitHub Release result.
 
+## Custom groups and status
+
+- `GET /api/groups` returns user groups with live total/enabled/disabled counts plus the virtual ungrouped count.
+- `POST /api/groups`, `PATCH /api/groups/:id`, and `DELETE /api/groups/:id` create, rename, and remove groups. Removing a group only clears membership.
+- `POST /api/groups/:id/status` accepts `{ "enabled": true|false }` and returns per-Skill success, failure, and plugin-skip counts.
+- `POST /api/skills/bulk` accepts the `group` action with `groupId`; `null` moves the selection to Ungrouped.
+
+AI maintenance processes every enabled local Skill by default. `classificationConcurrency` is validated from 1 through 8 and limits in-flight model requests, not total work.
+
 The implementation uses GitHub's versioned REST headers and follows its official [Git tree](https://docs.github.com/en/rest/git/trees#get-a-tree), [commit](https://docs.github.com/en/rest/commits/commits#get-a-commit), and [repository archive](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip) contracts.
 
 No endpoint returns saved AI or GitHub credentials. A settings response uses `hasApiKey` and `hasGithubToken` booleans instead.

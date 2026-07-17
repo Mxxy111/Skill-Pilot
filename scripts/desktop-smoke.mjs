@@ -15,24 +15,28 @@ const electronApp = await electron.launch({
 try {
   let maintenanceRunning = false;
   const maintenanceRun = {
-    id: 'smoke-maintenance-run', status: 'running', phase: 'classification', completed: 3, total: 10,
-    remaining: 17, current: 'frontend-ui-engineering', message: '已分类 3/10', startedAt: '2026-07-14T00:00:00.000Z'
+    id: 'smoke-maintenance-run', status: 'running', phase: 'classification', completed: 3, total: 266,
+    remaining: 0, current: 'frontend-ui-engineering', message: '已维护 3/266', startedAt: '2026-07-14T00:00:00.000Z'
   };
   await electronApp.context().route('**/api/automation/status', route => route.fulfill({ json: {
     isRunning: maintenanceRunning,
     lastScheduledRun: '2026-07-13T12:00:00.000Z', nextRunAt: '2026-07-14T12:00:00.000Z',
     run: maintenanceRunning ? maintenanceRun : null,
-    settings: { enabled: true, intervalHours: 24, updateChecks: true, autoUpdate: false, classification: true, classificationBatchSize: 10 },
+    settings: { enabled: true, intervalHours: 24, updateChecks: true, autoUpdate: false, classification: true, classificationConcurrency: 3 },
     updates: { tracked: 2, eligible: 2, total: 0, failed: 0 }, history: []
+  } }));
+  await electronApp.context().route('**/api/groups', route => route.fulfill({ json: {
+    groups: [{ id: 'group-research', name: '研究工作台', count: 0, enabled: 0, disabled: 0 }],
+    ungrouped: { count: 266, enabled: 266, disabled: 0 }
   } }));
   await electronApp.context().route('**/api/automation/run', route => {
     maintenanceRunning = true;
     return route.fulfill({ status: 202, json: { run: maintenanceRun } });
   });
   await electronApp.context().route('**/api/app-updates/status**', route => route.fulfill({ json: {
-    status: 'update-available', currentVersion: '0.8.0', latestVersion: '0.8.1', updateAvailable: true,
+    status: 'update-available', currentVersion: '0.9.0', latestVersion: '0.9.1', updateAvailable: true,
     checkedAt: '2026-07-13T12:00:00.000Z',
-    release: { name: 'SkillPilot 0.8.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.8.1', publishedAt: '2026-07-14T12:00:00.000Z', notes: 'Stable update', assets: [] }
+    release: { name: 'SkillPilot 0.9.1', url: 'https://github.com/Mxxy111/Skill-Pilot/releases/tag/v0.9.1', publishedAt: '2026-07-14T12:00:00.000Z', notes: 'Stable update', assets: [] }
   } }));
   const window = await electronApp.firstWindow();
   const consoleErrors = [];
@@ -63,6 +67,13 @@ try {
   const screenshotDir = join(process.cwd(), 'test-results');
   mkdirSync(screenshotDir, { recursive: true });
   await window.screenshot({ path: join(screenshotDir, 'desktop-dashboard.png'), fullPage: true });
+
+  await window.locator('.nav-item').filter({ hasText: 'Skills 库' }).click();
+  await window.getByRole('heading', { name: 'Skills 库' }).waitFor();
+  await window.getByText('我的分组').waitFor();
+  await window.getByText('研究工作台').waitFor();
+  await window.getByRole('switch').first().waitFor();
+  await window.screenshot({ path: join(screenshotDir, 'desktop-library-groups.png') });
 
   await window.route('**/api/discovery/catalog**', route => route.fulfill({ json: {
     source: 'skills.sh-leaderboard', view: 'popular', query: '', resolvedQuery: '', searchType: null,
@@ -97,7 +108,7 @@ try {
   await window.locator('.nav-item').filter({ hasText: '自动维护' }).click();
   await window.getByRole('heading', { name: '可追踪、可回滚的 Skills 维护' }).waitFor();
   await window.getByText('自动应用低风险更新').waitFor();
-  await window.getByText('稳定结果不会重复覆盖').waitFor();
+  await window.getByText('结果原位更新、不重复堆积').waitFor();
   await window.getByRole('button', { name: '立即运行一次' }).click();
   await window.getByRole('progressbar', { name: '维护进度' }).waitFor();
   await window.getByText('frontend-ui-engineering').waitFor();
@@ -105,9 +116,9 @@ try {
 
   await window.locator('.nav-item').filter({ hasText: '设置' }).click();
   await window.getByRole('heading', { name: '应用更新' }).waitFor();
-  await window.locator('.update-state').filter({ hasText: '发现新版本 0.8.1' }).waitFor();
+  await window.locator('.update-state').filter({ hasText: '发现新版本 0.9.1' }).waitFor();
   await window.getByRole('button', { name: '立即检查更新' }).click();
-  await window.getByRole('status').filter({ hasText: '发现新版本 0.8.1' }).waitFor();
+  await window.getByRole('status').filter({ hasText: '发现新版本 0.9.1' }).waitFor();
   const horizontalLayout = await window.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
     documentWidth: document.documentElement.scrollWidth,
@@ -136,7 +147,7 @@ try {
   await window.screenshot({ path: join(screenshotDir, 'desktop-settings-compact.png'), fullPage: true });
   if (consoleErrors.length) throw new Error(`Renderer console errors: ${consoleErrors.join(' | ')}`);
 
-  console.log(JSON.stringify({ ...result, verifiedPages: ['总览', '发现', '仓库检查与安装', '自动维护后台进度', '应用更新'], horizontalLayout, compactLayout, consoleErrors }, null, 2));
+  console.log(JSON.stringify({ ...result, verifiedPages: ['总览', 'Skills 分组与状态切换', '发现', '仓库检查与安装', '自动维护后台进度', '应用更新'], horizontalLayout, compactLayout, consoleErrors }, null, 2));
 } finally {
   await electronApp.close();
   rmSync(userDataDir, { recursive: true, force: true });
