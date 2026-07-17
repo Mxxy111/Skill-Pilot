@@ -7,7 +7,7 @@ import {
   parseRepositoryAssessment,
   parseRepositoryRecommendations
 } from '../src/core/ai.js';
-import { prepareClassificationBatch, selectSkillsForClassification } from '../src/core/automation.js';
+import { mapWithConcurrency, prepareClassificationBatch, selectSkillsForClassification } from '../src/core/automation.js';
 
 test('AI classification parser accepts fenced JSON and normalizes fields', () => {
   const parsed = parseClassificationResponse('```json\n{"category":"Development","tags":["API","api","tool"],"summary":"Builds APIs","risk":"low"}\n```');
@@ -66,7 +66,7 @@ test('AI recommendations cannot introduce repositories outside the supplied cand
   }]);
 });
 
-test('scheduled classification selects only unclassified or content-changed skills', () => {
+test('scheduled classification selects every enabled local skill, including stable ones', () => {
   const skills = [
     { id: 'codex:new', source: 'local', isEnabled: true, lastClassifiedAt: null, modified: '2026-01-01T00:00:00.000Z' },
     { id: 'codex:stable', source: 'local', isEnabled: true, lastClassifiedAt: '2026-02-01T00:00:00.000Z', modified: '2026-01-01T00:00:00.000Z', classificationFingerprint: 'same', lastClassificationFingerprint: 'same' },
@@ -74,10 +74,10 @@ test('scheduled classification selects only unclassified or content-changed skil
   ];
   const selected = selectSkillsForClassification(skills, [], 25);
 
-  assert.deepEqual(selected.items.map(skill => skill.id), ['codex:new', 'codex:changed']);
+  assert.deepEqual(selected.items.map(skill => skill.id), ['codex:new', 'codex:stable', 'codex:changed']);
   assert.equal(selected.remaining, 0);
-  assert.equal(selected.eligible, 2);
-  assert.equal(selected.skippedStable, 1);
+  assert.equal(selected.eligible, 3);
+  assert.equal(selected.skippedStable, 0);
 });
 
 test('manual classification can intentionally refresh a stable selected skill', () => {
@@ -86,7 +86,7 @@ test('manual classification can intentionally refresh a stable selected skill', 
   assert.deepEqual(selected.items.map(skill => skill.id), ['codex:stable']);
 });
 
-test('AI classification loads content only for the selected batch', () => {
+test('AI classification loads content for the complete enabled inventory', () => {
   const skills = Array.from({ length: 200 }, (_, index) => ({
     id: `codex:skill-${index}`,
     name: `skill-${index}`,
@@ -103,7 +103,25 @@ test('AI classification loads content only for the selected batch', () => {
     skill => { contentReads++; return { ...skill, content: `content ${skill.id}`, frontmatter: {} }; }
   );
 
-  assert.equal(result.items.length, 10);
-  assert.equal(result.remaining, 190);
-  assert.equal(contentReads, 10);
+  assert.equal(result.items.length, 200);
+  assert.equal(result.remaining, 0);
+  assert.equal(contentReads, 200);
+});
+
+test('bounded async mapping processes every item without exceeding concurrency', async () => {
+  let active = 0;
+  let peak = 0;
+  const seen = [];
+  const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async value => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 4));
+    seen.push(value);
+    active--;
+    return value * 2;
+  });
+
+  assert.equal(peak, 3);
+  assert.deepEqual([...seen].sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(results, [2, 4, 6, 8, 10, 12, 14]);
 });

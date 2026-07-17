@@ -34,34 +34,30 @@ export function classificationFingerprint(skill) {
   return createHash('sha256').update(input).digest('hex');
 }
 
-function needsClassification(skill, force) {
-  if (force || !skill.lastClassifiedAt) return true;
-  if (skill.classificationFingerprint && skill.lastClassificationFingerprint) {
-    return skill.classificationFingerprint !== skill.lastClassificationFingerprint;
-  }
-  const modifiedAt = Date.parse(skill.modified || '');
-  const classifiedAt = Date.parse(skill.lastClassifiedAt || '');
-  return Number.isFinite(modifiedAt) && Number.isFinite(classifiedAt) && modifiedAt > classifiedAt;
-}
-
 export function selectSkillsForClassification(skills, ids = [], limit = 25, options = {}) {
   const wanted = new Set(ids);
-  const candidates = skills
-    .filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id)))
-    .filter(skill => needsClassification(skill, options.force === true));
-  const eligible = candidates
-    .sort((a, b) => {
-      if (!a.lastClassifiedAt && b.lastClassifiedAt) return -1;
-      if (a.lastClassifiedAt && !b.lastClassifiedAt) return 1;
-      return String(a.lastClassifiedAt || '').localeCompare(String(b.lastClassifiedAt || '')) || a.id.localeCompare(b.id);
-    });
-  const batchSize = Math.max(1, Math.min(100, Number(limit) || 25));
+  const eligible = skills.filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id)));
   return {
-    items: eligible.slice(0, batchSize),
-    remaining: Math.max(0, eligible.length - batchSize),
+    items: eligible,
+    remaining: 0,
     eligible: eligible.length,
-    skippedStable: Math.max(0, skills.filter(skill => skill.source === 'local' && skill.isEnabled && (!wanted.size || wanted.has(skill.id))).length - eligible.length)
+    skippedStable: 0
   };
+}
+
+export async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!items.length) return [];
+  const limit = Math.max(1, Math.min(8, Number(concurrency) || 3));
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 export function prepareClassificationBatch(skills, ids = [], limit = 25, readContent = readSkillContent, options = {}) {
@@ -86,20 +82,21 @@ export async function classifySkills(ids = [], options = {}) {
   const selection = prepareClassificationBatch(
     skills,
     ids,
-    ids.length ? 100 : settings.automation.classificationBatchSize,
+    Number.POSITIVE_INFINITY,
     options.readContentImpl || readSkillContent,
     { force: ids.length > 0 }
   );
-  const results = [];
+  let completed = 0;
   reportProgress(options.onProgress, {
     phase: 'classification',
     completed: 0,
     total: selection.items.length,
     remaining: selection.remaining,
-    message: selection.items.length ? `准备分类 ${selection.items.length} 个 Skills` : '没有需要重新分类的 Skills'
+    message: selection.items.length ? `准备维护全部 ${selection.items.length} 个 Skills` : '没有可维护的已启用 Skills'
   });
-  for (const [index, skill] of selection.items.entries()) {
+  const results = await mapWithConcurrency(selection.items, settings.automation.classificationConcurrency, async skill => {
     options.signal?.throwIfAborted?.();
+    let result;
     try {
       const classification = await (options.classifyImpl || classifySkill)(skill.classificationInput, { signal: options.signal });
       (options.updateSkill || ((id, patch) => database.updateSkill(id, patch)))(skill.id, {
@@ -107,20 +104,22 @@ export async function classifySkills(ids = [], options = {}) {
         lastClassifiedAt: new Date().toISOString(),
         lastClassificationFingerprint: skill.classificationFingerprint
       });
-      results.push({ id: skill.id, ok: true, classification });
+      result = { id: skill.id, ok: true, classification };
     } catch (error) {
       if (options.signal?.aborted) throw options.signal.reason || error;
-      results.push({ id: skill.id, ok: false, error: error.message });
+      result = { id: skill.id, ok: false, error: error.message };
     }
+    completed++;
     reportProgress(options.onProgress, {
       phase: 'classification',
-      completed: index + 1,
+      completed,
       total: selection.items.length,
       remaining: selection.remaining,
       current: skill.name,
-      message: `已分类 ${index + 1}/${selection.items.length}`
+      message: `已维护 ${completed}/${selection.items.length}`
     });
-  }
+    return result;
+  });
   const succeeded = results.filter(item => item.ok).length;
   if (options.recordHistory !== false) {
     (options.addHistory || (entry => database.addHistory(entry)))({ type: 'classify', status: succeeded === results.length ? 'success' : 'partial', message: `Classified ${succeeded}/${results.length} skills` });

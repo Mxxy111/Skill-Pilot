@@ -17,6 +17,7 @@ import { readFileSync } from 'fs';
 import { database, validateBackup } from './core/database.js';
 import { listSources as listSkillSources, addCustomSource, updateSource, removeSource, listInstallTargets } from './core/sources.js';
 import { dashboardSummary, exportSkills, runBulkAction } from './core/bulk.js';
+import { listGroupSummaries, setGroupEnabled } from './core/groups.js';
 import { searchGithub } from './core/discovery.js';
 import { cancelMaintenance, classifySkills, getAutomationStatus, normalizeAutomationPatch, startMaintenance } from './core/automation.js';
 import { testAI } from './core/ai.js';
@@ -385,6 +386,31 @@ export function createRoutes() {
     } catch (e) { apiError(res, 400, 'BULK_ACTION_FAILED', sanitizeError(e.message)); }
   });
 
+  router.get('/groups', (req, res) => {
+    try {
+      const groups = listGroupSummaries();
+      res.json({ groups, ungrouped: groups.ungrouped });
+    } catch (e) { apiError(res, 500, 'GROUPS_FAILED', sanitizeError(e.message)); }
+  });
+  router.post('/groups', (req, res) => {
+    try { res.status(201).json({ group: database.createGroup(req.body?.name) }); }
+    catch (e) { apiError(res, 400, 'GROUP_CREATE_FAILED', sanitizeError(e.message)); }
+  });
+  router.patch('/groups/:id', (req, res) => {
+    try { res.json({ group: database.updateGroup(req.params.id, req.body || {}) }); }
+    catch (e) { apiError(res, 400, 'GROUP_UPDATE_FAILED', sanitizeError(e.message)); }
+  });
+  router.delete('/groups/:id', (req, res) => {
+    try { res.json({ ok: true, group: database.removeGroup(req.params.id) }); }
+    catch (e) { apiError(res, 400, 'GROUP_DELETE_FAILED', sanitizeError(e.message)); }
+  });
+  router.post('/groups/:id/status', (req, res) => {
+    try {
+      const result = setGroupEnabled(req.params.id, Boolean(req.body?.enabled));
+      res.status(result.failed ? 207 : 200).json(result);
+    } catch (e) { apiError(res, 400, 'GROUP_STATUS_FAILED', sanitizeError(e.message)); }
+  });
+
   router.post('/skills/bulk/export', (req, res) => {
     try {
       const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
@@ -421,10 +447,10 @@ export function createRoutes() {
         if (!Number.isFinite(hours) || hours < 1 || hours > 720) throw new Error('Automation interval must be between 1 and 720 hours.');
         patch.automation.intervalHours = hours;
       }
-      if (patch.automation?.classificationBatchSize !== undefined) {
-        const size = Number(patch.automation.classificationBatchSize);
-        if (!Number.isInteger(size) || size < 1 || size > 100) throw new Error('Classification batch size must be between 1 and 100.');
-        patch.automation.classificationBatchSize = size;
+      if (patch.automation?.classificationConcurrency !== undefined) {
+        const concurrency = Number(patch.automation.classificationConcurrency);
+        if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('Classification concurrency must be between 1 and 8.');
+        patch.automation.classificationConcurrency = concurrency;
       }
       if (patch.automation) patch.automation = normalizeAutomationPatch(database.getSettings().automation, patch.automation, new Date());
       database.updateSettings(patch);

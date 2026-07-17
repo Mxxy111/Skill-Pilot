@@ -12,6 +12,7 @@ export function enrichSkill(skill) {
     summary: metadata.summary || '',
     risk: metadata.risk || 'unknown',
     isFavorite: Boolean(metadata.isFavorite),
+    groupId: metadata.groupId || null,
     lastClassifiedAt: metadata.lastClassifiedAt || null,
     lastClassificationFingerprint: metadata.lastClassificationFingerprint || null
   };

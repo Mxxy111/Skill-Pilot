@@ -49,10 +49,9 @@ function movePath(source, target) {
   }
 }
 
-export function categorizeSkills(ids, category) {
-  const value = String(category || '').trim().slice(0, 60);
-  if (!value) throw new Error('Category is required.');
-  return ids.map(id => database.updateSkill(id, { category: value }));
+export function assignSkillsToGroup(ids, groupId) {
+  database.assignSkillsToGroup(ids, groupId || null);
+  return ids.map(id => database.getSkill(id));
 }
 
 export function deleteSkills(ids) {
@@ -94,29 +93,31 @@ export function exportSkills(ids, outputDir = tmpdir(), prefix = 'export') {
   return file;
 }
 
-export function runBulkAction({ ids, action, category }) {
+export function runBulkAction({ ids, action, groupId }) {
   const selected = [...new Set(Array.isArray(ids) ? ids.map(String) : [])];
   if (!selected.length || selected.length > 200) throw new Error('Select between 1 and 200 skills.');
   if (action === 'enable') return selected.map(id => setSkillEnabled(id, true));
   if (action === 'disable') return selected.map(id => setSkillEnabled(id, false));
-  if (action === 'categorize') return categorizeSkills(selected, category);
+  if (action === 'group') return assignSkillsToGroup(selected, groupId);
   if (action === 'delete') return deleteSkills(selected);
   throw new Error('Unsupported bulk action.');
 }
 
 export function dashboardSummary() {
   const skills = listAll();
-  const categories = {};
   const agents = {};
   for (const skill of skills) {
-    categories[skill.category || 'uncategorized'] = (categories[skill.category || 'uncategorized'] || 0) + 1;
     agents[skill.agent || 'other'] = (agents[skill.agent || 'other'] || 0) + 1;
   }
+  const groups = database.listGroups().map(group => {
+    const members = skills.filter(skill => skill.groupId === group.id);
+    return { ...group, count: members.length, enabled: members.filter(skill => skill.isEnabled).length };
+  });
   return {
     total: skills.length,
     enabled: skills.filter(skill => skill.isEnabled).length,
     disabled: skills.filter(skill => !skill.isEnabled).length,
-    categories,
+    groups,
     agents,
     recentlyModified: [...skills].sort((a, b) => new Date(b.modified) - new Date(a.modified)).slice(0, 6)
   };
